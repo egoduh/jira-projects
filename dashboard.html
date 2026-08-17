@@ -167,12 +167,13 @@ function analyze(issue){
   const priority = (f.priority && f.priority.name) || "";
   const curCat = (f.status && f.status.statusCategory && f.status.statusCategory.key) || "new";
 
-  // переходы статусов из истории
-  const trans = [];
+  // переходы статусов + смены типа из истории
+  const trans = [], typeChanges = [];
   const hs = (issue.changelog && issue.changelog.histories) || [];
   for(const h of hs){
     for(const it of (h.items||[])){
       if(it.field === "status") trans.push({at: parseJira(h.created), from: it.fromString, to: it.toString});
+      if(it.field === "issuetype") typeChanges.push({from: it.fromString, to: it.toString});
     }
   }
   trans.sort((a,b)=>a.at-b.at);
@@ -184,6 +185,11 @@ function analyze(issue){
   }
   if(firstActive===null && curCat==="indeterminate") firstActive = created; // создан сразу в работе
   const reopened = trans.some(t => cat(t.from)==="done" && cat(t.to)!=="done");
+
+  // --- сигналы гейминга ---
+  const bugReclass = typeChanges.some(t => isBug(t.from) && !isBug(t.to)); // баг → фича/задача
+  const backward = trans.some(t => cat(t.from)==="indeterminate" && cat(t.to)==="new"); // стоп-кран In Progress→To Do
+  const noActive = firstActive===null; // ни разу не был In Progress
 
   // тайминги в категориях для flow efficiency
   let activeMs = 0;
@@ -202,9 +208,15 @@ function analyze(issue){
   const flowEff = (cycle && cycle>0) ? Math.min(1, activeMs/cycle) : null;
   const wipAge = (curCat==="indeterminate") ? ((new Date()) - (firstActive||created)) : null;
 
+  // done-задача без реального времени в работе (cycle ~0 / пропущен In Progress)
+  const cycleZero = !!doneAt && (noActive || (cycle!=null && cycle < 3600000));   // <1 часа
+  const directToDone = !!doneAt && noActive;                                       // ни разу не In Progress
+  const sameDay = !!(doneAt && created) && doneAt.toDateString()===created.toDateString();
+
   return { key: issue.key, summary: f.summary, type: typeName, isBug: isBug(typeName), priority,
            statusName: f.status && f.status.name, curCat, created, doneAt,
-           lead, cycle, flowEff, reopened, wipAge };
+           lead, cycle, flowEff, reopened, wipAge,
+           bugReclass, backward, cycleZero, directToDone, sameDay };
 }
 
 // ---------- сводка ----------
@@ -231,6 +243,22 @@ function summarize(rows, winDays){
   const bugDone = done.filter(r=>r.isBug).length;
   const reopened = done.filter(r=>r.reopened).length;
 
+  // --- здоровье метрик (детектор гейминга), с ключами задач как доказательствами ---
+  const n = done.length || 1;
+  const sig = (arr) => ({ n: arr.length, pct: arr.length/n, keys: arr.map(r=>r.key) });
+  const sameDay      = sig(done.filter(r=>r.sameDay));
+  const cycleZero    = sig(done.filter(r=>r.cycleZero));
+  const directToDone = sig(done.filter(r=>r.directToDone));
+  // смена типа и стоп-кран — по всем задачам (не только done)
+  const bugReclass = { n: rows.filter(r=>r.bugReclass).length, keys: rows.filter(r=>r.bugReclass).map(r=>r.key), pct: rows.filter(r=>r.bugReclass).length/(rows.length||1) };
+  const backward   = { n: rows.filter(r=>r.backward).length,   keys: rows.filter(r=>r.backward).map(r=>r.key),   pct: rows.filter(r=>r.backward).length/(rows.length||1) };
+  // batch-закрытие: доля закрытий в самый пиковый день
+  const byDay = {};
+  for(const r of done){ const k = r.doneAt.toISOString().slice(0,10); byDay[k]=(byDay[k]||0)+1; }
+  let batchDay=null, batchN=0; for(const k in byDay){ if(byDay[k]>batchN){batchN=byDay[k]; batchDay=k;} }
+  const batch = { day: batchDay, n: batchN, pct: done.length ? batchN/done.length : 0 };
+  const health = { sameDay, cycleZero, directToDone, bugReclass, backward, batch };
+
   return {
     doneCount: done.length,
     cycleP50: pct(cycles,50), cycleP85: pct(cycles,85),
@@ -240,7 +268,8 @@ function summarize(rows, winDays){
     wip, wipCount: wip.length,
     dist, scopeCount: scope.length,
     bugRatio: done.length ? bugDone/done.length : null,
-    reopenRate: done.length ? reopened/done.length : null
+    reopenRate: done.length ? reopened/done.length : null,
+    health
   };
 }
 
@@ -318,6 +347,46 @@ function render(s, meta){
   ];
   const exec = `<h2>Exec-сводка</h2><div class="cards">${cards.map(card).join("")}</div>`;
 
+  // ---- Здоровье метрик (детектор гейминга) ----
+  const keyLink = k => baseUrl ? `<a href="${baseUrl}/browse/${k}" target="_blank" rel="noopener">${esc(k)}</a>` : esc(k);
+  const evidence = keys => keys && keys.length
+    ? `<details><summary class="muted" style="cursor:pointer;font-size:12px">показать ${keys.length} задач</summary>
+       <div style="font-size:12px;margin-top:4px;line-height:1.7">${keys.slice(0,60).map(keyLink).join(", ")}${keys.length>60?` … (+${keys.length-60})`:''}</div></details>`
+    : '';
+  const stat = (pct, warnAt, badAt) => pct>=badAt?"bad":pct>=warnAt?"warn":"ok";
+  const hrow = (name, valTxt, cls, expl, keys) => `<tr>
+      <td>${name}</td>
+      <td class="${cls}" style="font-weight:600;white-space:nowrap">${valTxt}</td>
+      <td class="muted" style="font-size:12px">${expl}</td>
+      <td>${evidence(keys)}</td></tr>`;
+  const H = s.health, P = x => Math.round(x*100)+"%";
+  const anyRed = [H.sameDay.pct,H.cycleZero.pct,H.directToDone.pct].some(p=>p>=0.3)
+    || H.bugReclass.n>0 || H.backward.pct>=0.05 || H.batch.pct>=0.5;
+  const healthRows = [
+    hrow("Задача «одного дня»", `${H.sameDay.n} · ${P(H.sameDay.pct)}`, stat(H.sameDay.pct,0.15,0.30),
+      "создана и закрыта в тот же день — признак позднего заведения тикета, cycle искусственно мал", H.sameDay.keys),
+    hrow("Cycle ≈ 0 / нет работы", `${H.cycleZero.n} · ${P(H.cycleZero.pct)}`, stat(H.cycleZero.pct,0.15,0.30),
+      "закрыта почти без времени в In Progress — клок не шёл, cycle не отражает труд", H.cycleZero.keys),
+    hrow("Прыжок To Do → Done", `${H.directToDone.n} · ${P(H.directToDone.pct)}`, stat(H.directToDone.pct,0.10,0.25),
+      "ни разу не была In Progress — пропуск рабочего статуса", H.directToDone.keys),
+    hrow("Баг → фича/задача", `${H.bugReclass.n}`, H.bugReclass.n>0?(H.bugReclass.n>=3?"bad":"warn"):"ok",
+      "тип менялся с бага на не-баг — прячет bug share и переделки (ты это видел)", H.bugReclass.keys),
+    hrow("Стоп-кран (откат назад)", `${H.backward.n} · ${P(H.backward.pct)}`, stat(H.backward.pct,0.03,0.10),
+      "возврат In Progress → To Do — остановка счётчика cycle", H.backward.keys),
+    hrow("Batch-закрытие", H.batch.day?`${H.batch.n} за ${H.batch.day} · ${P(H.batch.pct)}`:"—", stat(H.batch.pct,0.30,0.50),
+      "много закрытий в один день (часто конец спринта) — даты закрытия не отражают реальную готовность",
+      null),
+  ].join("");
+  const healthPanel = `<h2>🕵 Здоровье метрик · детектор гейминга Lead/Cycle time</h2>
+    <div class="panel" style="${anyRed?'border-left:4px solid #bf2600':'border-left:4px solid #0a7d33'}">
+      <p style="margin:0 0 10px">${anyRed
+        ? '<b class="bad">⚠ Метрики скорости искажены.</b> Ниже — приёмы и <b>конкретные задачи-доказательства</b> (кликабельны). Cycle/Lead time читать с поправкой; это защита твоей ответственности за KPI.'
+        : '<b class="ok">✓ Явных признаков гейминга не видно</b> в этом окне. Но метрики скорости как KPI всё равно уязвимы — держи как диагностику.'}</p>
+      <table><thead><tr><th>Приём</th><th>Замер</th><th>Что значит</th><th>Доказательства</th></tr></thead>
+      <tbody>${healthRows}</tbody></table>
+      <p class="muted" style="font-size:12px;margin:10px 0 0">Сигналы — инженерная интерпретация следов в changelog <i>[интерпретация]</i>. Принцип «не одна метрика, а мозаика; не делать метрику целью» — из грунта (Larson гл.6, SPACE). Устойчивое решение — <b>убрать Lead/Cycle из KPI</b>, оставить как диагностику в паре с качеством.</p>
+    </div>`;
+
   const aging = s.wip.slice().sort((a,b)=>(b.wipAge||0)-(a.wipAge||0)).slice(0,12);
   const agingRows = aging.map(r=>{
     const d = r.wipAge!=null?days(r.wipAge):0;
@@ -344,7 +413,7 @@ function render(s, meta){
   const note = `<p class="muted" style="margin-top:18px">Окно ${meta.days} дн · закрыто ${s.doneCount} задач · всего в выборке ${meta.total}${meta.capped?' · ⚠ обрезано до 3000, сузь проекты/окно':''}.
     Deploy frequency / MTTR / настоящий CFR появятся при подключении CI/CD и системы инцидентов.</p>`;
 
-  out.innerHTML = legend + exec + ops + note;
+  out.innerHTML = legend + exec + healthPanel + ops + note;
 }
 
 // ---------- запуск ----------
