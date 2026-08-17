@@ -114,23 +114,46 @@ async function loadProjects(){
   }
 }
 
-// ---------- выборка issues ----------
+// ---------- выборка issues (бережно к Jira) ----------
+const PAGE = 100;        // задач на страницу
+const THROTTLE_MS = 200; // пауза между страницами — не бурстим Jira
+const HARD_CAP = 3000;   // потолок: дальше не тянем историю
+const CONFIRM_AT = 1500; // спросить подтверждение, если задач больше
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function jqlCount(jql){ // дешёвый префлайт: только total, без issues и без changelog
+  const r = await fetch(`/api/search?jql=${encodeURIComponent(jql)}&maxResults=0&fields=key`);
+  const d = await r.json();
+  if(!r.ok) throw new Error(d.error || ("HTTP "+r.status));
+  return d.total;
+}
+
 async function fetchIssues(keys, winDays){
   const jql = `project in (${keys.join(",")}) AND (statusCategory != Done OR resolved >= -${winDays}d) ORDER BY created ASC`;
   const fields = "summary,issuetype,status,created,resolutiondate,priority";
-  const CAP = 3000;
-  let startAt = 0, total = null, issues = [], capped = false;
-  while(true){
-    const url = `/api/search?jql=${encodeURIComponent(jql)}&expand=changelog&fields=${fields}&startAt=${startAt}&maxResults=100`;
+
+  const total = await jqlCount(jql);
+  if(total === 0) return { issues: [], total: 0, capped: false };
+  const target = Math.min(total, HARD_CAP);
+  if(total > CONFIRM_AT && !confirm(
+      `В выборке ${total} задач. Загрузка с историей — это ~${Math.ceil(target/PAGE)} запросов к Jira `
+      + `и заметная нагрузка. Продолжить?\n\nСовет: сузь набор проектов или уменьши окно.`)){
+    throw new Error("Отменено. Сузь проекты или уменьши окно, чтобы не грузить Jira.");
+  }
+
+  let startAt = 0, issues = [], capped = false;
+  while(startAt < target){
+    const url = `/api/search?jql=${encodeURIComponent(jql)}&expand=changelog&fields=${fields}&startAt=${startAt}&maxResults=${PAGE}`;
     const r = await fetch(url);
     const data = await r.json();
     if(!r.ok) throw new Error(data.error || ("HTTP "+r.status));
-    total = data.total;
-    issues = issues.concat(data.issues || []);
-    statusEl.textContent = `загружено ${issues.length} из ${total}…`;
-    startAt += (data.issues || []).length;
-    if(!data.issues || data.issues.length===0 || startAt>=total) break;
-    if(issues.length>=CAP){ capped = true; break; }
+    const batch = data.issues || [];
+    issues = issues.concat(batch);
+    statusEl.textContent = `загружено ${issues.length} из ${target}…`;
+    startAt += batch.length;
+    if(batch.length === 0) break;
+    if(issues.length >= HARD_CAP){ capped = true; break; }
+    if(startAt < target) await sleep(THROTTLE_MS);
   }
   return { issues, total, capped };
 }

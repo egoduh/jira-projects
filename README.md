@@ -122,6 +122,11 @@ WIP, Flow efficiency, Bug-ratio (прокси CFR), Reopen rate. Deploy frequenc
 (эндпоинты `/api/search`, `/api/status`), считает и рисует JS без внешних библиотек.
 Метрики выверены на синтетике (percentiles/aging/throughput/distribution).
 
+**Бережно к Jira:** запросы идут строго последовательно (не параллельно), по 100 задач на
+страницу с паузой 200 мс между страницами. Перед загрузкой — дешёвый префлайт-счётчик
+(`maxResults=0`, без истории); если задач >1500, спросит подтверждение; жёсткий потолок
+3000 (дальше не тянет `changelog`). `expand=changelog` тяжёлый — сужай проекты/окно.
+
 ## Файлы
 
 - `JiraProjects.java` — сервер + прокси к Jira REST (`/api/projects|whoami|status|search`).
