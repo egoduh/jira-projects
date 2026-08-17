@@ -1,0 +1,9 @@
+bin/
+obj/
+*.user
+
+# Секреты никогда не коммитим — токен живёт в user-secrets или env
+appsettings.*.json
+!appsettings.json
+secrets.json
+.env
