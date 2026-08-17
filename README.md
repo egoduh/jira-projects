@@ -1,10 +1,44 @@
 # JiraProjects
 
-Мини-сервис на .NET 8 для получения списка проектов из **Jira Server/DC 8.13.20**
-через `GET /rest/api/2/project`.
+Получение списка проектов из **Jira Server/DC 8.13.20** через `GET /rest/api/2/project`.
 
 Аутентификация — токен **Kantega SSO Enterprise** (Bearer). Kantega выдаёт персональные
 токены поверх Jira 8.13, у которой нет нативных PAT (они появились только в Jira 8.14).
+
+Две реализации, выбирай что проще запустить на рабочей машине:
+
+- **`jira_projects.py`** — Python, только стандартная библиотека. Ни `pip`, ни зависимостей.
+  Рекомендуется для быстрой проверки на рабочем инстансе.
+- **`.NET 8`** (`*.cs`) — если предпочитаешь основной стек.
+
+---
+
+## Python (рекомендуется для проверки)
+
+Нужен только `python3` (обычно уже стоит). Конфиг через переменные окружения:
+
+```bash
+export JIRA_BASE_URL="https://jira.company.ru"
+export JIRA_TOKEN="<токен-из-Kantega>"
+python3 jira_projects.py            # таблица KEY / NAME / LEAD
+python3 jira_projects.py --json     # сырой JSON
+```
+
+Режим Basic (если токен Kantega работает как пароль): `JIRA_AUTH_MODE=basic` + `JIRA_USERNAME=<логин>`.
+Корп. self-signed CA: `JIRA_INSECURE=1`.
+
+| Переменная       | По умолчанию | Назначение                                   |
+|------------------|--------------|----------------------------------------------|
+| `JIRA_BASE_URL`  | —            | URL инстанса без `/rest/...`                 |
+| `JIRA_TOKEN`     | —            | Токен Kantega (bearer) или пароль (basic)    |
+| `JIRA_AUTH_MODE` | `bearer`     | `bearer` или `basic`                         |
+| `JIRA_USERNAME`  | —            | Только для `basic`                           |
+| `JIRA_INSECURE`  | —            | `1` — не проверять TLS                        |
+| `JIRA_TIMEOUT`   | `30`         | Таймаут, сек                                 |
+
+---
+
+## .NET 8
 
 ## Настройка секретов
 
