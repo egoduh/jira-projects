@@ -126,9 +126,7 @@ public class JiraProjects {
         c.setConnectTimeout(timeoutMs);
         c.setReadTimeout(timeoutMs);
         c.setRequestProperty("Accept", "application/json");
-        c.setRequestProperty("Authorization", authMode.equals("basic")
-                ? "Basic " + base64(username + ":" + token)
-                : "Bearer " + token);   // bearer — режим по умолчанию для токена Kantega SSO
+        c.setRequestProperty("Authorization", authHeader());
 
         int code;
         try {
@@ -142,7 +140,14 @@ public class JiraProjects {
             String hint = code == 401 ? " (токен неверен/просрочен либо режим auth не совпадает: bearer vs basic)"
                     : code == 403 ? " (нет прав / CAPTCHA-lock)"
                     : code == 404 ? " (проверь JIRA_BASE_URL и контекст-путь)" : "";
-            throw new JiraError("Jira вернула " + code + hint + ". " + trunc(body, 300));
+            // Jira/Seraph кладут причину отказа в заголовки — самое ценное для диагностики
+            StringBuilder diag = new StringBuilder();
+            for (String h : new String[]{"WWW-Authenticate", "X-Seraph-LoginReason",
+                    "X-Authentication-Denied-Reason", "X-AUSERNAME"}) {
+                String v = c.getHeaderField(h);
+                if (v != null) diag.append(" [").append(h).append(": ").append(v).append("]");
+            }
+            throw new JiraError("Jira вернула " + code + hint + "." + diag + " " + trunc(body, 300));
         }
         return body;
     }
@@ -188,6 +193,22 @@ public class JiraProjects {
             }
         } catch (IOException ignored) {
         }
+    }
+
+    /**
+     * Заголовок Authorization по режиму:
+     *   basic          -> Basic base64(логин:токен)
+     *   ksso           -> ksso-token &lt;токен&gt;   (нативная схема Kantega SSO Enterprise)
+     *   bearer (деф.)  -> Bearer &lt;токен&gt;
+     * JIRA_AUTH_SCHEME задаёт произвольное имя схемы (если админ настроил своё):
+     *   Authorization: &lt;scheme&gt; &lt;токен&gt;
+     */
+    static String authHeader() {
+        if (authMode.equals("basic")) return "Basic " + base64(username + ":" + token);
+        String scheme = env("JIRA_AUTH_SCHEME", "");
+        if (!scheme.isEmpty()) return scheme + " " + token;
+        if (authMode.equals("ksso") || authMode.equals("ksso-token")) return "ksso-token " + token;
+        return "Bearer " + token;
     }
 
     static String base64(String s) {

@@ -8,8 +8,14 @@
 из Jira: парсит его уже браузер, поэтому JSON-библиотека в Java не нужна. Это же
 снимает CORS и не светит токен в браузере.
 
-Аутентификация — токен **Kantega SSO Enterprise** (Bearer). Kantega выдаёт персональные
-токены поверх Jira 8.13, у которой нет нативных PAT (они появились только в Jira 8.14).
+Аутентификация — токен **Kantega SSO Enterprise**. Kantega выдаёт персональные токены
+поверх Jira 8.13, у которой нет нативных PAT (они появились только в Jira 8.14).
+
+По [документации Kantega](https://kantega-sso.atlassian.net/wiki/spaces/KSE/pages/28049409/API+Authentication)
+токен передаётся **собственной схемой** `Authorization: ksso-token <токен>` (режим
+`JIRA_AUTH_MODE=ksso`), либо как Basic (`-u <логин>:<токен>`). Обычный `Bearer` для
+Kantega, как правило, **не** подходит — Jira не понимает схему и отвечает как анониму (пустой
+список или 401).
 
 ## Запуск
 
@@ -41,8 +47,9 @@ javac JiraProjects.java && java JiraProjects
 |------------------|--------------|----------------------------------------------|
 | `JIRA_BASE_URL`  | —            | URL инстанса без `/rest/...`                 |
 | `JIRA_TOKEN`     | —            | Токен Kantega (bearer) или пароль (basic)    |
-| `JIRA_AUTH_MODE` | `bearer`     | `bearer` или `basic`                         |
+| `JIRA_AUTH_MODE` | `bearer`     | `ksso` (Kantega) / `basic` / `bearer`        |
 | `JIRA_USERNAME`  | —            | Только для `basic`                           |
+| `JIRA_AUTH_SCHEME` | —          | Своё имя схемы: `Authorization: <схема> <токен>` |
 | `JIRA_CACERT`    | —            | Путь к корп. CA (PEM/CRT) — правильный TLS   |
 | `JIRA_INSECURE`  | —            | `1` — вообще не проверять TLS                 |
 | `JIRA_TIMEOUT`   | `30`         | Таймаут, сек                                 |
