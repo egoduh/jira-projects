@@ -87,13 +87,8 @@ function isoWeek(d){ // ключ недели YYYY-Www
   const wk = 1 + Math.round(((t-firstThu)/DAY - 3 + ((firstThu.getUTCDay()+6)%7))/7);
   return t.getUTCFullYear()+"-W"+String(wk).padStart(2,"0");
 }
-function classifyType(name){
-  const n = (name||"").toLowerCase();
-  if(/(баг|bug|дефект|defect|инцидент|incident|ошибк)/.test(n)) return "Bug";
-  if(/(долг|debt|tech|рефактор|refactor)/.test(n)) return "TechDebt";
-  if(/(риск|risk|безопас|security)/.test(n)) return "Risk";
-  return "Feature";
-}
+// bug-подобные типы — для качества (bug-ratio), распределение же идёт по реальным типам
+function isBug(name){ return /(баг|bug|дефект|defect|инцидент|incident|ошибк)/.test((name||"").toLowerCase()); }
 
 // ---------- загрузка справочников ----------
 let CATMAP = {}; // имя статуса -> new|indeterminate|done
@@ -145,7 +140,8 @@ function analyze(issue){
   const f = issue.fields;
   const created = parseJira(f.created);
   const resolved = parseJira(f.resolutiondate);
-  const typeBucket = classifyType(f.issuetype && f.issuetype.name);
+  const typeName = (f.issuetype && f.issuetype.name) || "—";
+  const priority = (f.priority && f.priority.name) || "";
   const curCat = (f.status && f.status.statusCategory && f.status.statusCategory.key) || "new";
 
   // переходы статусов из истории
@@ -183,7 +179,7 @@ function analyze(issue){
   const flowEff = (cycle && cycle>0) ? Math.min(1, activeMs/cycle) : null;
   const wipAge = (curCat==="indeterminate") ? ((new Date()) - (firstActive||created)) : null;
 
-  return { key: issue.key, summary: f.summary, type: typeBucket,
+  return { key: issue.key, summary: f.summary, type: typeName, isBug: isBug(typeName), priority,
            statusName: f.status && f.status.name, curCat, created, doneAt,
            lead, cycle, flowEff, reopened, wipAge };
 }
@@ -204,12 +200,12 @@ function summarize(rows, winDays){
   const thrVals = weekKeys.map(k=>weeks[k]);
   const thrAvg = thrVals.length ? thrVals.reduce((a,b)=>a+b,0)/thrVals.length : 0;
 
-  // распределение мощности (по всем в окне: done + wip)
+  // распределение мощности по РЕАЛЬНЫМ типам задач (История/Задача/Bug/…), по всем в окне
   const scope = done.concat(wip);
-  const dist = {Feature:0, Bug:0, TechDebt:0, Risk:0};
+  const dist = {};
   for(const r of scope) dist[r.type] = (dist[r.type]||0)+1;
 
-  const bugDone = done.filter(r=>r.type==="Bug").length;
+  const bugDone = done.filter(r=>r.isBug).length;
   const reopened = done.filter(r=>r.reopened).length;
 
   return {
@@ -242,11 +238,12 @@ function svgBars(keys, vals){
   return `<svg width="${W}" height="${H}">${bars}</svg>`;
 }
 function distBars(dist, total){
-  const colors={Feature:"#0052cc",Bug:"#bf2600",TechDebt:"#bf6a02",Risk:"#5243aa"};
-  return Object.keys(dist).map(k=>{
+  const palette=["#0052cc","#bf2600","#bf6a02","#5243aa","#0a7d33","#00857a","#8777d9","#97a0af"];
+  const keys=Object.keys(dist).sort((a,b)=>dist[b]-dist[a]);
+  return keys.map((k,i)=>{
     const v=dist[k], p=total?Math.round(v/total*100):0;
-    return `<div class="barrow"><span style="width:90px">${k}</span>
-      <div class="track"><div class="fill" style="width:${p}%;background:${colors[k]}"></div></div>
+    return `<div class="barrow"><span style="width:130px">${esc(k)}</span>
+      <div class="track"><div class="fill" style="width:${p}%;background:${palette[i%palette.length]}"></div></div>
       <span style="width:70px;text-align:right">${v} · ${p}%</span></div>`;
   }).join("");
 }
@@ -275,14 +272,15 @@ function render(s, meta){
     const cls = d>20?"bad":d>10?"warn":"";
     const link = baseUrl ? baseUrl+"/browse/"+r.key : "#";
     return `<tr><td><a href="${link}" target="_blank" rel="noopener">${esc(r.key)}</a></td>
-      <td>${esc((r.summary||"").slice(0,60))}</td><td>${esc(r.statusName||"")}</td>
+      <td>${esc((r.summary||"").slice(0,55))}</td><td>${esc(r.type||"")}</td>
+      <td>${esc(r.priority||"")}</td><td>${esc(r.statusName||"")}</td>
       <td class="${cls}" style="text-align:right">${d.toFixed(1)} д</td></tr>`;
-  }).join("") || '<tr><td colspan="4" class="muted">нет задач в работе</td></tr>';
+  }).join("") || '<tr><td colspan="6" class="muted">нет задач в работе</td></tr>';
 
   const ops = `<h2>Операционка</h2>
     <div class="panel"><b>Throughput по неделям</b> (закрыто задач)${svgBars(s.weekKeys, s.weekKeys.map(k=>s.weeks[k]))}</div>
     <div class="panel"><b>Aging WIP</b> — что дольше всего висит в работе (красное = затык)
-      <table><thead><tr><th>Ключ</th><th>Тема</th><th>Статус</th><th style="text-align:right">Возраст</th></tr></thead>
+      <table><thead><tr><th>Ключ</th><th>Тема</th><th>Тип</th><th>Приоритет</th><th>Статус</th><th style="text-align:right">Возраст</th></tr></thead>
       <tbody>${agingRows}</tbody></table></div>
     <div class="panel"><b>Куда уходит мощность</b> (${s.scopeCount} задач в окне)${distBars(s.dist, s.scopeCount)}</div>`;
 
