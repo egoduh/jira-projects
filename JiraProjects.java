@@ -88,6 +88,11 @@ public class JiraProjects {
             } else if (path.startsWith("/api/projects")) {
                 String json = fetchProjects();
                 send(ex, 200, json, "application/json; charset=utf-8");
+            } else if (path.startsWith("/api/whoami")) {
+                // Диагностика: кто мы для Jira? 200 с данными юзера = токен принят;
+                // 401/аноним = токен не применился (частая причина пустого списка проектов).
+                String json = jiraGet("/rest/api/2/myself");
+                send(ex, 200, json, "application/json; charset=utf-8");
             } else {
                 send(ex, 404, "{\"error\":\"not found\"}", "application/json; charset=utf-8");
             }
@@ -100,12 +105,22 @@ public class JiraProjects {
 
     /** Сырой JSON-массив проектов из Jira. Парсит браузер. */
     static String fetchProjects() throws Exception {
+        String body = jiraGet("/rest/api/2/project");
+        if (body.trim().equals("[]")) {
+            System.out.println("!  Jira вернула пустой список ([]). Вероятно, токен не применился и запрос "
+                    + "ушёл как анонимный — открой http://localhost:" + port + "/api/whoami для проверки.");
+        }
+        return body;
+    }
+
+    /** GET к Jira REST с авторизацией. Возвращает тело, кидает JiraError с подсказкой. */
+    static String jiraGet(String apiPath) throws Exception {
         if (baseUrl.isEmpty()) throw new JiraError("Не задан JIRA_BASE_URL");
         if (token.isEmpty()) throw new JiraError("Не задан JIRA_TOKEN");
         if (authMode.equals("basic") && username.isEmpty())
             throw new JiraError("Для JIRA_AUTH_MODE=basic нужен JIRA_USERNAME");
 
-        URL u = new URL(baseUrl + "/rest/api/2/project");
+        URL u = new URL(baseUrl + apiPath);
         HttpURLConnection c = (HttpURLConnection) u.openConnection();
         c.setRequestMethod("GET");
         c.setConnectTimeout(timeoutMs);
@@ -119,7 +134,7 @@ public class JiraProjects {
         try {
             code = c.getResponseCode();
         } catch (Exception e) {
-            throw new JiraError("Сетевая ошибка: " + e.getMessage() + ". При self-signed сертификате задай JIRA_INSECURE=1");
+            throw new JiraError("Сетевая ошибка: " + e.getMessage() + ". При self-signed сертификате задай JIRA_INSECURE=1 или JIRA_CACERT");
         }
         InputStream is = code >= 400 ? c.getErrorStream() : c.getInputStream();
         String body = is == null ? "" : readAll(is);
