@@ -15,7 +15,9 @@
          background: #fff; padding: 14px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
   .bar label { font-size: 12px; color: #555; display: block; margin-bottom: 4px; }
   select, input { padding: 8px 10px; font-size: 13px; border: 1px solid #ccc; border-radius: 6px; }
-  select[multiple] { min-width: 220px; height: 92px; }
+  select[multiple] { min-width: 260px; height: 240px; }
+  .selbox { font-size: 12px; margin-top: 4px; }
+  .selbox a { color: #0052cc; cursor: pointer; }
   button { padding: 9px 18px; font-size: 14px; border: 0; border-radius: 6px; background: #0052cc; color: #fff; cursor: pointer; }
   button:hover { background: #0043a6; }
   .status { font-size: 13px; color: #555; margin-left: auto; }
@@ -49,7 +51,13 @@
   <div class="bar">
     <div>
       <label>Проекты (можно несколько)</label>
+      <input id="projfilter" placeholder="фильтр по ключу/названию…" style="width:100%;margin-bottom:4px">
       <select id="projects" multiple></select>
+      <div class="selbox"><a id="selall">выбрать всё</a> · <a id="selnone">сброс</a> · выбрано <span id="selcount">0</span></div>
+    </div>
+    <div>
+      <label>Эталонный проект</label>
+      <select id="refproj" style="min-width:200px"></select>
     </div>
     <div>
       <label>Окно, дней</label>
@@ -57,6 +65,7 @@
     </div>
     <button id="load">Построить</button>
     <button id="workflow" style="background:#42526e">Сравнить воркфлоу</button>
+    <button id="csv" style="background:#0a7d33" disabled title="доступно после сравнения">CSV</button>
     <span class="status" id="status"></span>
   </div>
   <div id="out"><p class="muted">Выбери проекты и нажми «Построить». Данные берутся из Jira по твоей сессии.</p></div>
@@ -102,18 +111,38 @@ async function loadStatuses(){
 }
 function cat(name){ return CATMAP[name] || "new"; }
 
+let ALL_PROJECTS = [];               // [{key,name}]
+const selectedKeys = new Set();      // авторитетный набор выбора (переживает фильтр)
+
 async function loadProjects(){
   const r = await fetch("/api/projects");
   const data = await r.json();
   if(!r.ok){ out.innerHTML = '<div class="err">'+esc(data.error||"ошибка")+'</div>'; return; }
-  const sel = $("projects");
-  sel.innerHTML = "";
-  for(const p of data.sort((a,b)=>(a.key>b.key?1:-1))){
-    const o = document.createElement("option");
-    o.value = p.key; o.textContent = p.key + " — " + p.name;
-    sel.appendChild(o);
-  }
+  ALL_PROJECTS = data.map(p=>({key:p.key, name:p.name})).sort((a,b)=>(a.key>b.key?1:-1));
+  // эталон — все проекты, single select
+  const ref = $("refproj");
+  ref.innerHTML = ALL_PROJECTS.map(p=>`<option value="${esc(p.key)}">${esc(p.key)} — ${esc(p.name)}</option>`).join("");
+  renderProjectOptions("");
 }
+
+function renderProjectOptions(filter){
+  const f = (filter||"").trim().toLowerCase();
+  const sel = $("projects");
+  const list = ALL_PROJECTS.filter(p=> !f || p.key.toLowerCase().includes(f) || (p.name||"").toLowerCase().includes(f));
+  sel.innerHTML = list.map(p=>`<option value="${esc(p.key)}"${selectedKeys.has(p.key)?" selected":""}>${esc(p.key)} — ${esc(p.name)}</option>`).join("");
+  $("selcount").textContent = selectedKeys.size;
+}
+
+function syncSelectionFromVisible(){
+  // видимые опции обновляют набор; скрытые фильтром выборы сохраняются
+  const sel = $("projects");
+  const visible = new Set([...sel.options].map(o=>o.value));
+  const chosen = new Set([...sel.selectedOptions].map(o=>o.value));
+  for(const k of visible){ if(chosen.has(k)) selectedKeys.add(k); else selectedKeys.delete(k); }
+  $("selcount").textContent = selectedKeys.size;
+}
+
+function getSelectedKeys(){ return [...selectedKeys]; }
 
 // ---------- выборка issues (бережно к Jira) ----------
 const PAGE = 100;        // задач на страницу
@@ -419,7 +448,7 @@ function render(s, meta){
 
 // ---------- запуск ----------
 async function run(){
-  const keys = [...$("projects").selectedOptions].map(o=>o.value);
+  const keys = getSelectedKeys();
   if(!keys.length){ out.innerHTML = '<div class="err">Выбери хотя бы один проект.</div>'; return; }
   const winDays = Math.max(7, parseInt($("days").value)||90);
   out.innerHTML = '<p class="muted">Загрузка и расчёт…</p>'; statusEl.textContent = "";
@@ -443,31 +472,48 @@ async function projectStatuses(key){
   return d; // массив типов задач, у каждого .statuses[]
 }
 
+let LAST_WF = null; // для CSV-экспорта
+
 async function compareWorkflows(){
-  const keys = [...$("projects").selectedOptions].map(o=>o.value);
+  let keys = getSelectedKeys();
+  const ref = $("refproj").value;
   if(!keys.length){ out.innerHTML = '<div class="err">Выбери хотя бы один проект.</div>'; return; }
+  if(ref && !keys.includes(ref)) keys = [ref, ...keys];   // эталон всегда в сравнении
   out.innerHTML = '<p class="muted">Сравниваю воркфлоу…</p>'; statusEl.textContent = "";
   try{
     const perProject = {}; // key -> Map(statusName -> categoryKey)
+    let i = 0;
     for(const k of keys){
       const types = await projectStatuses(k);
       const m = new Map();
       for(const t of (types||[])) for(const s of (t.statuses||[])) m.set(s.name, (s.statusCategory&&s.statusCategory.key)||"new");
       perProject[k] = m;
-      statusEl.textContent = `получено ${Object.keys(perProject).length}/${keys.length}`;
+      statusEl.textContent = `получено ${++i}/${keys.length}`;
+      if(i < keys.length) await sleep(80);   // лёгкий троттлинг на 90 проектах
     }
-    renderWorkflow(perProject, keys);
+    LAST_WF = { perProject, keys, ref };
+    renderWorkflow(perProject, keys, ref);
+    $("csv").disabled = false;
     statusEl.textContent = "готово";
   }catch(e){
     out.innerHTML = '<div class="err">'+esc(e.message)+'</div>'; statusEl.textContent = "";
   }
 }
 
-function renderWorkflow(perProject, keys){
+// соответствие проекта эталону: совпавшие/пропущенные/лишние статусы
+function conformance(perProject, key, ref){
+  const R = perProject[ref], P = perProject[key];
+  if(!R || !P) return null;
+  const missing = [...R.keys()].filter(s=>!P.has(s));   // есть у эталона, нет у проекта
+  const extra   = [...P.keys()].filter(s=>!R.has(s));   // есть у проекта, нет у эталона
+  const matched = R.size - missing.length;
+  return { pct: R.size ? matched/R.size : 1, matched, missing, extra };
+}
+
+function renderWorkflow(perProject, keys, ref){
   const catOrder = {new:0, indeterminate:1, done:2};
   const catColor = {new:"#6b778c", indeterminate:"#0052cc", done:"#0a7d33"};
   const catName  = {new:"To Do", indeterminate:"In Progress", done:"Done"};
-  // объединённый набор статусов + фиксация расхождений категорий по одному имени
   const cat = new Map(), catConflict = new Set();
   for(const k of keys) for(const [name,c] of perProject[k]){
     if(cat.has(name) && cat.get(name)!==c) catConflict.add(name);
@@ -477,7 +523,30 @@ function renderWorkflow(perProject, keys){
   const sig = k => [...perProject[k].keys()].sort().join("|");
   const same = new Set(keys.map(sig)).size === 1;
 
-  const header = keys.map(k=>`<th style="text-align:center">${esc(k)}</th>`).join("");
+  // --- итог соответствия эталону ---
+  let confBlock = "", confAvg = null, fullMatch = 0;
+  if(ref && perProject[ref]){
+    const others = keys.filter(k=>k!==ref);
+    const confs = others.map(k=>({k, c:conformance(perProject,k,ref)})).filter(x=>x.c);
+    confAvg = confs.length ? confs.reduce((a,x)=>a+x.c.pct,0)/confs.length : 1;
+    fullMatch = confs.filter(x=>x.c.pct===1 && x.c.extra.length===0).length;
+    const rowsC = confs.sort((a,b)=>a.c.pct-b.c.pct).map(x=>{
+      const p = Math.round(x.c.pct*100), cls = p>=100&&x.c.extra.length===0?"ok":p>=80?"warn":"bad";
+      return `<tr><td>${esc(x.k)}</td>
+        <td class="${cls}" style="font-weight:600;text-align:right">${p}%</td>
+        <td class="muted" style="font-size:12px">${x.c.missing.length?"нет: "+x.c.missing.map(esc).join(", "):"—"}</td>
+        <td class="muted" style="font-size:12px">${x.c.extra.length?"лишние: "+x.c.extra.map(esc).join(", "):"—"}</td></tr>`;
+    }).join("");
+    confBlock = `<h2 style="margin-top:20px">Соответствие эталону «${esc(ref)}»</h2>
+      <div class="panel">
+        <p style="margin:0 0 10px">Среднее соответствие: <b class="${confAvg>=0.9?'ok':confAvg>=0.7?'warn':'bad'}">${Math.round(confAvg*100)}%</b>
+          · полностью совпадают с эталоном: <b>${fullMatch}/${others.length}</b></p>
+        <table><thead><tr><th>Проект</th><th style="text-align:right">Соответствие</th><th>Отличия от эталона</th><th></th></tr></thead>
+        <tbody>${rowsC || '<tr><td colspan="4" class="muted">нет других проектов для сравнения</td></tr>'}</tbody></table>
+      </div>`;
+  }
+
+  const header = keys.map(k=>`<th style="text-align:center">${esc(k)}${k===ref?' ★':''}</th>`).join("");
   let rows = "";
   for(const st of statuses){
     const c = cat.get(st);
@@ -491,18 +560,54 @@ function renderWorkflow(perProject, keys){
   }
   const verdict = same
     ? `<b class="ok">✓ Воркфлоу одинаковый</b> — у всех ${keys.length} проектов один набор из ${statuses.length} статусов. Метрики можно считать одной меркой и агрегировать.`
-    : `<b class="bad">⚠ Воркфлоу различаются</b> — наборы статусов не совпадают (см. «не у всех»). Cycle time и health-детектор надо считать <b>по-проектно</b>, агрегировать осторожно.`;
-  out.innerHTML = `<h2>Сравнение воркфлоу</h2>
+    : `<b class="bad">⚠ Воркфлоу различаются</b> — наборы статусов не совпадают. Cycle time и health-детектор надо считать <b>по-проектно</b>, агрегировать осторожно.`;
+  out.innerHTML = `<h2>Сравнение воркфлоу (${keys.length} проектов)</h2>
     <div class="panel" style="border-left:4px solid ${same?'#0a7d33':'#bf2600'}">
       <p style="margin:0 0 10px">${verdict}</p>
-      <table><thead><tr><th>Статус (категория)</th>${header}${same?'':'<th></th>'}</tr></thead><tbody>${rows}</tbody></table>
+      <div style="overflow:auto;max-height:60vh"><table><thead><tr><th style="position:sticky;left:0;background:#fafbfc">Статус (категория)</th>${header}${same?'':'<th></th>'}</tr></thead><tbody>${rows}</tbody></table></div>
       <p class="muted" style="font-size:12px;margin-top:10px">Категории: <span style="color:#6b778c">To Do</span> · <span style="color:#0052cc">In Progress</span> · <span style="color:#0a7d33">Done</span>.
-      «категория различается» = один и тот же статус отнесён к разным категориям в разных проектах (искажает cycle time). Источник: GET /rest/api/2/project/{key}/statuses (без истории, дёшево).</p>
-    </div>`;
+      «категория различается» = один статус отнесён к разным категориям (искажает cycle time). ★ = эталон. Кнопка CSV — экспорт матрицы. Источник: GET /rest/api/2/project/{key}/statuses.</p>
+    </div>${confBlock}`;
+}
+
+// экспорт матрицы воркфлоу в CSV (Excel-совместимый, UTF-8 BOM)
+function exportWorkflowCsv(){
+  if(!LAST_WF){ return; }
+  const { perProject, keys, ref } = LAST_WF;
+  const cat = new Map();
+  for(const k of keys) for(const [name,c] of perProject[k]) if(!cat.has(name)) cat.set(name, c);
+  const catName = {new:"To Do", indeterminate:"In Progress", done:"Done"};
+  const q = s => '"' + String(s).replace(/"/g,'""') + '"';
+  const head = ["Статус","Категория", ...keys.map(k=> k===ref? k+" (эталон)" : k)];
+  const lines = [head.map(q).join(",")];
+  for(const [st,c] of cat){
+    lines.push([q(st), q(catName[c]||c), ...keys.map(k=> perProject[k].has(st) ? q("да") : q(""))].join(","));
+  }
+  // блок соответствия
+  if(ref && perProject[ref]){
+    lines.push(""); lines.push(q("Соответствие эталону "+ref));
+    lines.push(["Проект","Соответствие %","Нет (vs эталон)","Лишние"].map(q).join(","));
+    for(const k of keys.filter(x=>x!==ref)){
+      const cf = conformance(perProject,k,ref); if(!cf) continue;
+      lines.push([q(k), q(Math.round(cf.pct*100)), q(cf.missing.join("; ")), q(cf.extra.join("; "))].join(","));
+    }
+  }
+  const blob = new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "workflow-compare.csv";
+  document.body.appendChild(a); a.click(); a.remove();
 }
 
 $("load").addEventListener("click", run);
 $("workflow").addEventListener("click", compareWorkflows);
+$("csv").addEventListener("click", exportWorkflowCsv);
+$("projects").addEventListener("change", syncSelectionFromVisible);
+$("projfilter").addEventListener("input", e => renderProjectOptions(e.target.value));
+$("selall").addEventListener("click", () => {   // выбрать всё, что видно под фильтром
+  for(const o of $("projects").options) selectedKeys.add(o.value);
+  renderProjectOptions($("projfilter").value);
+});
+$("selnone").addEventListener("click", () => { selectedKeys.clear(); renderProjectOptions($("projfilter").value); });
 loadProjects();
 </script>
 </body>
