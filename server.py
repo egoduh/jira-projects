@@ -28,6 +28,21 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
+def load_dotenv(path=".env"):
+    """Читает .env (KEY=VALUE построчно) в окружение. Без зависимостей.
+    Уже заданные переменные окружения не перезатирает."""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip().strip('"').strip("'")
+            os.environ.setdefault(key, val)
+
+
 def cfg():
     base_url = os.environ.get("JIRA_BASE_URL", "").strip()
     token = os.environ.get("JIRA_TOKEN", "").strip()
@@ -213,6 +228,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))  # .env рядом со скриптом
     port = int(os.environ.get("PORT", "8000"))
     # Ранняя проверка конфигурации, чтобы не поднимать сервер вслепую.
     base_url = os.environ.get("JIRA_BASE_URL", "").strip()
