@@ -245,8 +245,9 @@ function summarize(rows, winDays){
 }
 
 // ---------- рендер ----------
-function card(v, label, hint, na){
-  return `<div class="card${na?' na':''}"><div class="v">${v}</div><div class="l">${label}</div>${hint?`<div class="h">${hint}</div>`:''}</div>`;
+function card(c){ // c: {v,label,hint,tip,na}
+  return `<div class="card${c.na?' na':''}" title="${esc(c.tip||'')}">
+    <div class="v">${c.v}</div><div class="l">${c.label}</div>${c.hint?`<div class="h">${c.hint}</div>`:''}</div>`;
 }
 function svgBars(keys, vals){
   if(!keys.length) return '<p class="muted">нет данных</p>';
@@ -276,18 +277,42 @@ function render(s, meta){
   const bugR = s.bugRatio!=null ? Math.round(s.bugRatio*100)+"%" : "—";
   const reop = s.reopenRate!=null ? Math.round(s.reopenRate*100)+"%" : "—";
 
-  const exec = `<h2>Exec-сводка</h2><div class="cards">
-    ${card(fmtDays(s.cycleP50), "Cycle time, медиана", "50% задач быстрее")}
-    ${card(fmtDays(s.cycleP85), "Cycle time, 85-й перцентиль", "обещание срока")}
-    ${card(s.thrAvg.toFixed(1), "Throughput, задач/нед", "средняя пропускная")}
-    ${card(fmtDays(s.leadP50), "Lead time, медиана", "создано → done")}
-    ${card(String(s.wipCount), "WIP сейчас", "задач в работе")}
-    ${card(effPct, "Flow efficiency", "актив vs очереди")}
-    ${card(bugR, "Bug-ratio", "прокси CFR")}
-    ${card(reop, "Reopen rate", "качество потока")}
-    ${card("n/a", "Deploy freq", "нужен CI/CD", true)}
-    ${card("n/a", "MTTR", "нужны инциденты", true)}
-  </div>`;
+  const legend = `<details class="panel" style="margin-bottom:16px">
+    <summary style="cursor:pointer;font-weight:600">❓ Как читать этот дашборд</summary>
+    <div style="margin-top:10px;font-size:13px;line-height:1.6;color:#42526e">
+      Все числа — за выбранное окно (${meta.days} дн), по задачам из твоей Jira.
+      <b>Exec-сводка</b> отвечает на 4 вопроса руководителя:
+      <br>• <b>Быстро ли везём?</b> — Cycle / Lead time (дни на задачу). <i>Меньше — лучше.</i>
+      <br>• <b>Сколько везём?</b> — Throughput (задач/нед) и WIP (сколько в работе разом).
+      <br>• <b>Качественно ли?</b> — Bug-ratio и Reopen rate. <i>Меньше — лучше.</i>
+      <br>• <b>Эффективно ли?</b> — Flow efficiency (доля работы vs ожидания в очередях).
+      <br><b>Операционка</b> ниже показывает, <b>где вмешаться</b>: что застряло, стабилен ли поток, куда уходит мощность.
+      <br>Наведи курсор на любую карточку — там подробное пояснение.
+    </div></details>`;
+
+  const cards = [
+    {v:fmtDays(s.cycleP50), label:"Cycle time · медиана", hint:"дней на задачу в работе",
+     tip:"Сколько дней задача реально делается — от взятия в работу до готовности. Медиана: половина задач быстрее. Главный показатель скорости. Меньше — лучше."},
+    {v:fmtDays(s.cycleP85), label:"Cycle time · 85%", hint:"реалистичный срок для бизнеса",
+     tip:"85% задач готовы за это время. Именно это можно обещать заказчику как срок. Большой разрыв с медианой = непредсказуемость."},
+    {v:s.thrAvg.toFixed(1), label:"Throughput · задач/нед", hint:"пропускная способность",
+     tip:"Сколько задач команда закрывает в среднем за неделю. Больше — лучше (при стабильном качестве)."},
+    {v:fmtDays(s.leadP50), label:"Lead time · медиана", hint:"создано → готово",
+     tip:"Дней от создания задачи до готовности, включая лежание в бэклоге. Разница с cycle time = сколько задача ждала, пока её взяли."},
+    {v:String(s.wipCount), label:"WIP сейчас", hint:"задач в работе одновременно",
+     tip:"Сколько задач в работе прямо сейчас. Много WIP при низком throughput = распыление: всё начато, ничего не доводится."},
+    {v:effPct, label:"Flow efficiency", hint:"работа vs ожидание",
+     tip:"Доля времени, когда над задачей реально работали, а не она ждала в очереди/на передаче. Норма 15–40%. Низко — главный резерв ускорения."},
+    {v:bugR, label:"Bug-ratio", hint:"доля багов (прокси стабильности)",
+     tip:"Доля багов среди закрытого. Высоко = мощность уходит на исправления вместо нового. Прокси Change Failure Rate."},
+    {v:reop, label:"Reopen rate", hint:"вернули в работу (прокси качества)",
+     tip:"Доля задач, которые переоткрывали (готово → снова в работу). Прокси «сделано верно с первого раза»."},
+    {v:"n/a", label:"Deploy frequency", hint:"нужен CI/CD", na:true,
+     tip:"Как часто выкатываем в прод (метрика DORA). Появится при подключении CI/CD."},
+    {v:"n/a", label:"MTTR", hint:"нужны инциденты", na:true,
+     tip:"Скорость восстановления после сбоя (метрика DORA). Появится при подключении системы инцидентов."},
+  ];
+  const exec = `<h2>Exec-сводка</h2><div class="cards">${cards.map(card).join("")}</div>`;
 
   const aging = s.wip.slice().sort((a,b)=>(b.wipAge||0)-(a.wipAge||0)).slice(0,12);
   const agingRows = aging.map(r=>{
@@ -300,17 +325,22 @@ function render(s, meta){
       <td class="${cls}" style="text-align:right">${d.toFixed(1)} д</td></tr>`;
   }).join("") || '<tr><td colspan="6" class="muted">нет задач в работе</td></tr>';
 
-  const ops = `<h2>Операционка</h2>
-    <div class="panel"><b>Throughput по неделям</b> (закрыто задач)${svgBars(s.weekKeys, s.weekKeys.map(k=>s.weeks[k]))}</div>
-    <div class="panel"><b>Aging WIP</b> — что дольше всего висит в работе (красное = затык)
+  const ops = `<h2>Операционка · где вмешаться</h2>
+    <div class="panel"><b>Throughput по неделям</b> — сколько задач закрывали каждую неделю.
+      <span class="muted">Ровные столбики = предсказуемый поток; провалы/скачки = нестабильность.</span>
+      ${svgBars(s.weekKeys, s.weekKeys.map(k=>s.weeks[k]))}</div>
+    <div class="panel"><b>Aging WIP</b> — задачи, дольше всего висящие в работе.
+      <span class="muted">Сверху самые «протухшие». <span class="warn">жёлтое &gt;10 дн</span>, <span class="bad">красное &gt;20 дн</span> — кандидаты «разберись, почему стоит».</span>
       <table><thead><tr><th>Ключ</th><th>Тема</th><th>Тип</th><th>Приоритет</th><th>Статус</th><th style="text-align:right">Возраст</th></tr></thead>
       <tbody>${agingRows}</tbody></table></div>
-    <div class="panel"><b>Куда уходит мощность</b> (${s.scopeCount} задач в окне)${distBars(s.dist, s.scopeCount)}</div>`;
+    <div class="panel"><b>Куда уходит мощность</b> — распределение по типам задач за окно (${s.scopeCount} шт).
+      <span class="muted">Показывает баланс: новое (История/Задача) vs исправления (Bug) vs долг.</span>
+      ${distBars(s.dist, s.scopeCount)}</div>`;
 
-  const note = `<p class="muted" style="margin-top:18px">Окно ${meta.days} дн · закрыто ${s.doneCount} · всего выбрано ${meta.total}${meta.capped?' · ⚠ обрезано до 3000, сузь проекты/окно':''}.
-    Deploy freq/MTTR/настоящий CFR появятся при подключении CI/инцидентов.</p>`;
+  const note = `<p class="muted" style="margin-top:18px">Окно ${meta.days} дн · закрыто ${s.doneCount} задач · всего в выборке ${meta.total}${meta.capped?' · ⚠ обрезано до 3000, сузь проекты/окно':''}.
+    Deploy frequency / MTTR / настоящий CFR появятся при подключении CI/CD и системы инцидентов.</p>`;
 
-  out.innerHTML = exec + ops + note;
+  out.innerHTML = legend + exec + ops + note;
 }
 
 // ---------- запуск ----------
