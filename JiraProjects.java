@@ -96,6 +96,14 @@ public class JiraProjects {
             } else if (path.startsWith("/api/status")) {
                 // Все статусы с их категориями (To Do / In Progress / Done) — для маппинга истории.
                 send(ex, 200, jiraGet("/rest/api/2/status"), "application/json; charset=utf-8");
+            } else if (path.startsWith("/api/project-statuses")) {
+                // ?key=ABC -> статусы проекта по типам задач (для сравнения воркфлоу).
+                String key = queryParam(ex.getRequestURI().getRawQuery(), "key");
+                if (key == null || key.isEmpty()) {
+                    send(ex, 400, "{\"error\":\"нужен параметр ?key=<проект>\"}", "application/json; charset=utf-8");
+                } else {
+                    send(ex, 200, jiraGet("/rest/api/2/project/" + key + "/statuses"), "application/json; charset=utf-8");
+                }
             } else if (path.startsWith("/api/search")) {
                 // Прокси JQL-поиска: параметры (jql, expand, fields, startAt, maxResults) формирует JS.
                 String q = ex.getRequestURI().getRawQuery();
@@ -181,6 +189,17 @@ public class JiraProjects {
         try (OutputStream os = ex.getResponseBody()) {
             os.write(b);
         }
+    }
+
+    static String queryParam(String rawQuery, String name) {
+        if (rawQuery == null) return null;
+        for (String p : rawQuery.split("&")) {
+            int i = p.indexOf('=');
+            if (i > 0 && p.substring(0, i).equals(name)) {
+                return java.net.URLDecoder.decode(p.substring(i + 1), StandardCharsets.UTF_8);
+            }
+        }
+        return null;
     }
 
     static String env(String key, String def) {

@@ -56,6 +56,7 @@
       <input id="days" type="number" value="90" min="7" max="365" style="width:90px">
     </div>
     <button id="load">Построить</button>
+    <button id="workflow" style="background:#42526e">Сравнить воркфлоу</button>
     <span class="status" id="status"></span>
   </div>
   <div id="out"><p class="muted">Выбери проекты и нажми «Построить». Данные берутся из Jira по твоей сессии.</p></div>
@@ -434,7 +435,74 @@ async function run(){
     out.innerHTML = '<div class="err">'+esc(e.message)+'</div>'; statusEl.textContent = "";
   }
 }
+// ---------- сравнение воркфлоу ----------
+async function projectStatuses(key){
+  const r = await fetch("/api/project-statuses?key="+encodeURIComponent(key));
+  const d = await r.json();
+  if(!r.ok) throw new Error(d.error || ("HTTP "+r.status));
+  return d; // массив типов задач, у каждого .statuses[]
+}
+
+async function compareWorkflows(){
+  const keys = [...$("projects").selectedOptions].map(o=>o.value);
+  if(!keys.length){ out.innerHTML = '<div class="err">Выбери хотя бы один проект.</div>'; return; }
+  out.innerHTML = '<p class="muted">Сравниваю воркфлоу…</p>'; statusEl.textContent = "";
+  try{
+    const perProject = {}; // key -> Map(statusName -> categoryKey)
+    for(const k of keys){
+      const types = await projectStatuses(k);
+      const m = new Map();
+      for(const t of (types||[])) for(const s of (t.statuses||[])) m.set(s.name, (s.statusCategory&&s.statusCategory.key)||"new");
+      perProject[k] = m;
+      statusEl.textContent = `получено ${Object.keys(perProject).length}/${keys.length}`;
+    }
+    renderWorkflow(perProject, keys);
+    statusEl.textContent = "готово";
+  }catch(e){
+    out.innerHTML = '<div class="err">'+esc(e.message)+'</div>'; statusEl.textContent = "";
+  }
+}
+
+function renderWorkflow(perProject, keys){
+  const catOrder = {new:0, indeterminate:1, done:2};
+  const catColor = {new:"#6b778c", indeterminate:"#0052cc", done:"#0a7d33"};
+  const catName  = {new:"To Do", indeterminate:"In Progress", done:"Done"};
+  // объединённый набор статусов + фиксация расхождений категорий по одному имени
+  const cat = new Map(), catConflict = new Set();
+  for(const k of keys) for(const [name,c] of perProject[k]){
+    if(cat.has(name) && cat.get(name)!==c) catConflict.add(name);
+    if(!cat.has(name)) cat.set(name, c);
+  }
+  const statuses = [...cat.keys()].sort((a,b)=> (catOrder[cat.get(a)]-catOrder[cat.get(b)]) || (a<b?-1:1));
+  const sig = k => [...perProject[k].keys()].sort().join("|");
+  const same = new Set(keys.map(sig)).size === 1;
+
+  const header = keys.map(k=>`<th style="text-align:center">${esc(k)}</th>`).join("");
+  let rows = "";
+  for(const st of statuses){
+    const c = cat.get(st);
+    const cells = keys.map(k => perProject[k].has(st)
+      ? '<td style="text-align:center;color:#0a7d33">✓</td>'
+      : '<td style="text-align:center;color:#ccc">–</td>').join("");
+    const universal = keys.every(k=>perProject[k].has(st));
+    const conflict = catConflict.has(st) ? ' <span class="bad" style="font-size:11px">категория различается!</span>' : '';
+    const flag = universal ? '' : '<td class="warn" style="font-size:11px">не у всех</td>';
+    rows += `<tr><td><span class="pill" style="background:${catColor[c]};color:#fff">${catName[c]}</span> ${esc(st)}${conflict}</td>${cells}${same?'':flag}</tr>`;
+  }
+  const verdict = same
+    ? `<b class="ok">✓ Воркфлоу одинаковый</b> — у всех ${keys.length} проектов один набор из ${statuses.length} статусов. Метрики можно считать одной меркой и агрегировать.`
+    : `<b class="bad">⚠ Воркфлоу различаются</b> — наборы статусов не совпадают (см. «не у всех»). Cycle time и health-детектор надо считать <b>по-проектно</b>, агрегировать осторожно.`;
+  out.innerHTML = `<h2>Сравнение воркфлоу</h2>
+    <div class="panel" style="border-left:4px solid ${same?'#0a7d33':'#bf2600'}">
+      <p style="margin:0 0 10px">${verdict}</p>
+      <table><thead><tr><th>Статус (категория)</th>${header}${same?'':'<th></th>'}</tr></thead><tbody>${rows}</tbody></table>
+      <p class="muted" style="font-size:12px;margin-top:10px">Категории: <span style="color:#6b778c">To Do</span> · <span style="color:#0052cc">In Progress</span> · <span style="color:#0a7d33">Done</span>.
+      «категория различается» = один и тот же статус отнесён к разным категориям в разных проектах (искажает cycle time). Источник: GET /rest/api/2/project/{key}/statuses (без истории, дёшево).</p>
+    </div>`;
+}
+
 $("load").addEventListener("click", run);
+$("workflow").addEventListener("click", compareWorkflows);
 loadProjects();
 </script>
 </body>
