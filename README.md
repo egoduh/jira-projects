@@ -105,7 +105,25 @@ JIRA_INSECURE=1
   Basic: в `.env` укажи `JIRA_AUTH_MODE=basic` и `JIRA_USERNAME=<логин>` (токен Kantega
   часто работает как пароль в Basic-auth). После правки `.env` перезапусти `java`.
 
+## Дашборд разработки
+
+Открой **http://localhost:8000/dashboard** (ссылка есть и в шапке списка проектов).
+Выбери проекты + окно (дней) → «Построить». Метрики считаются из Jira по твоей сессии:
+issues + история переходов (`expand=changelog`), агрегация целиком в браузере.
+
+**Exec-сводка:** Cycle time (медиана и 85-й перцентиль), Throughput/нед, Lead time,
+WIP, Flow efficiency, Bug-ratio (прокси CFR), Reopen rate. Deploy frequency / MTTR —
+заглушки `n/a` до подключения CI/CD и системы инцидентов.
+
+**Операционка (drill-down):** throughput по неделям, таблица Aging WIP (что дольше всего
+висит в работе — красное = затык), распределение мощности Feature / Bug / TechDebt / Risk.
+
+Всё на чистом JDK: Java лишь проксирует `/rest/api/2/search` и `/rest/api/2/status`
+(эндпоинты `/api/search`, `/api/status`), считает и рисует JS без внешних библиотек.
+Метрики выверены на синтетике (percentiles/aging/throughput/distribution).
+
 ## Файлы
 
-- `JiraProjects.java` — сервер + прокси к Jira REST.
-- `index.html` — страница (таблица, поиск, сортировка).
+- `JiraProjects.java` — сервер + прокси к Jira REST (`/api/projects|whoami|status|search`).
+- `index.html` — список проектов (таблица, поиск, сортировка).
+- `dashboard.html` — дашборд разработки (метрики, графики).

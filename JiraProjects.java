@@ -85,16 +85,21 @@ public class JiraProjects {
         String path = ex.getRequestURI().getPath();
         try {
             if (path.equals("/") || path.startsWith("/index")) {
-                String page = readPage().replace("__BASEURL__", baseUrl);
-                send(ex, 200, page, "text/html; charset=utf-8");
+                send(ex, 200, readPage("index.html").replace("__BASEURL__", baseUrl), "text/html; charset=utf-8");
+            } else if (path.startsWith("/dashboard")) {
+                send(ex, 200, readPage("dashboard.html").replace("__BASEURL__", baseUrl), "text/html; charset=utf-8");
             } else if (path.startsWith("/api/projects")) {
-                String json = fetchProjects();
-                send(ex, 200, json, "application/json; charset=utf-8");
+                send(ex, 200, fetchProjects(), "application/json; charset=utf-8");
             } else if (path.startsWith("/api/whoami")) {
-                // Диагностика: кто мы для Jira? 200 с данными юзера = токен принят;
-                // 401/аноним = токен не применился (частая причина пустого списка проектов).
-                String json = jiraGet("/rest/api/2/myself");
-                send(ex, 200, json, "application/json; charset=utf-8");
+                // Диагностика: кто мы для Jira? 200 с данными юзера = токен принят; аноним = нет.
+                send(ex, 200, jiraGet("/rest/api/2/myself"), "application/json; charset=utf-8");
+            } else if (path.startsWith("/api/status")) {
+                // Все статусы с их категориями (To Do / In Progress / Done) — для маппинга истории.
+                send(ex, 200, jiraGet("/rest/api/2/status"), "application/json; charset=utf-8");
+            } else if (path.startsWith("/api/search")) {
+                // Прокси JQL-поиска: параметры (jql, expand, fields, startAt, maxResults) формирует JS.
+                String q = ex.getRequestURI().getRawQuery();
+                send(ex, 200, jiraGet("/rest/api/2/search" + (q == null ? "" : "?" + q)), "application/json; charset=utf-8");
             } else {
                 send(ex, 404, "{\"error\":\"not found\"}", "application/json; charset=utf-8");
             }
@@ -163,9 +168,9 @@ public class JiraProjects {
 
     // --- вспомогательное ---
 
-    static String readPage() throws IOException {
-        Path p = Paths.get("index.html");
-        if (!Files.exists(p)) throw new IOException("рядом нет index.html — запускай из папки проекта");
+    static String readPage(String file) throws IOException {
+        Path p = Paths.get(file);
+        if (!Files.exists(p)) throw new IOException("рядом нет " + file + " — запускай из папки проекта");
         return new String(Files.readAllBytes(p), StandardCharsets.UTF_8);
     }
 

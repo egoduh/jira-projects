@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Дашборд разработки — Jira</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: Segoe UI, -apple-system, Roboto, sans-serif; margin: 0; background: #f5f6f8; color: #1a1a1a; }
+  header { background: #0052cc; color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 16px; }
+  header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  header a { color: #cfe0ff; font-size: 13px; }
+  .wrap { max-width: 1180px; margin: 20px auto; padding: 0 16px; }
+  .bar { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 18px;
+         background: #fff; padding: 14px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .bar label { font-size: 12px; color: #555; display: block; margin-bottom: 4px; }
+  select, input { padding: 8px 10px; font-size: 13px; border: 1px solid #ccc; border-radius: 6px; }
+  select[multiple] { min-width: 220px; height: 92px; }
+  button { padding: 9px 18px; font-size: 14px; border: 0; border-radius: 6px; background: #0052cc; color: #fff; cursor: pointer; }
+  button:hover { background: #0043a6; }
+  .status { font-size: 13px; color: #555; margin-left: auto; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: #6b778c; margin: 26px 0 12px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+  .card { background: #fff; border-radius: 8px; padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .card .v { font-size: 26px; font-weight: 700; }
+  .card .l { font-size: 12px; color: #6b778c; margin-top: 2px; }
+  .card .h { font-size: 11px; color: #97a0af; margin-top: 6px; }
+  .card.na .v { color: #b3bac5; }
+  .panel { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.1); margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #eee; }
+  th { color: #6b778c; font-weight: 600; }
+  .barrow { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 13px; }
+  .barrow .track { flex: 1; background: #eef1f5; border-radius: 4px; height: 16px; overflow: hidden; }
+  .barrow .fill { height: 100%; background: #0052cc; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
+  .warn { color: #bf6a02; } .bad { color: #bf2600; } .ok { color: #0a7d33; }
+  .err { background: #ffebe6; border: 1px solid #ff8f73; color: #bf2600; padding: 14px; border-radius: 8px; white-space: pre-wrap; }
+  .muted { color: #97a0af; }
+  svg { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Дашборд разработки</h1>
+  <a href="/">← список проектов</a>
+</header>
+<div class="wrap">
+  <div class="bar">
+    <div>
+      <label>Проекты (можно несколько)</label>
+      <select id="projects" multiple></select>
+    </div>
+    <div>
+      <label>Окно, дней</label>
+      <input id="days" type="number" value="90" min="7" max="365" style="width:90px">
+    </div>
+    <button id="load">Построить</button>
+    <span class="status" id="status"></span>
+  </div>
+  <div id="out"><p class="muted">Выбери проекты и нажми «Построить». Данные берутся из Jira по твоей сессии.</p></div>
+</div>
+<script>
+const baseUrl = "__BASEURL__";
+const $ = id => document.getElementById(id);
+const out = $("out"), statusEl = $("status");
+
+// ---------- утилиты ----------
+function parseJira(s){ // "2026-08-10T12:34:56.000+0300" -> Date
+  if(!s) return null;
+  return new Date(s.replace(/([+-]\d\d)(\d\d)$/, "$1:$2"));
+}
+const DAY = 86400000;
+function days(ms){ return ms/DAY; }
+function pct(arr, p){
+  if(!arr.length) return null;
+  const a = arr.slice().sort((x,y)=>x-y);
+  const i = Math.max(0, Math.ceil(p/100*a.length)-1);
+  return a[i];
+}
+function fmtDays(ms){ return ms==null ? "—" : (days(ms)).toFixed(1)+" д"; }
+function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function isoWeek(d){ // ключ недели YYYY-Www
+  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = (t.getUTCDay()+6)%7; t.setUTCDate(t.getUTCDate()-day+3);
+  const firstThu = new Date(Date.UTC(t.getUTCFullYear(),0,4));
+  const wk = 1 + Math.round(((t-firstThu)/DAY - 3 + ((firstThu.getUTCDay()+6)%7))/7);
+  return t.getUTCFullYear()+"-W"+String(wk).padStart(2,"0");
+}
+function classifyType(name){
+  const n = (name||"").toLowerCase();
+  if(/(баг|bug|дефект|defect|инцидент|incident|ошибк)/.test(n)) return "Bug";
+  if(/(долг|debt|tech|рефактор|refactor)/.test(n)) return "TechDebt";
+  if(/(риск|risk|безопас|security)/.test(n)) return "Risk";
+  return "Feature";
+}
+
+// ---------- загрузка справочников ----------
+let CATMAP = {}; // имя статуса -> new|indeterminate|done
+async function loadStatuses(){
+  const r = await fetch("/api/status");
+  const data = await r.json();
+  if(!r.ok) throw new Error(data.error || "не удалось получить /api/status");
+  CATMAP = {};
+  for(const s of data) CATMAP[s.name] = (s.statusCategory && s.statusCategory.key) || "new";
+}
+function cat(name){ return CATMAP[name] || "new"; }
+
+async function loadProjects(){
+  const r = await fetch("/api/projects");
+  const data = await r.json();
+  if(!r.ok){ out.innerHTML = '<div class="err">'+esc(data.error||"ошибка")+'</div>'; return; }
+  const sel = $("projects");
+  sel.innerHTML = "";
+  for(const p of data.sort((a,b)=>(a.key>b.key?1:-1))){
+    const o = document.createElement("option");
+    o.value = p.key; o.textContent = p.key + " — " + p.name;
+    sel.appendChild(o);
+  }
+}
+
+// ---------- выборка issues ----------
+async function fetchIssues(keys, winDays){
+  const jql = `project in (${keys.join(",")}) AND (statusCategory != Done OR resolved >= -${winDays}d) ORDER BY created ASC`;
+  const fields = "summary,issuetype,status,created,resolutiondate,priority";
+  const CAP = 3000;
+  let startAt = 0, total = null, issues = [], capped = false;
+  while(true){
+    const url = `/api/search?jql=${encodeURIComponent(jql)}&expand=changelog&fields=${fields}&startAt=${startAt}&maxResults=100`;
+    const r = await fetch(url);
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || ("HTTP "+r.status));
+    total = data.total;
+    issues = issues.concat(data.issues || []);
+    statusEl.textContent = `загружено ${issues.length} из ${total}…`;
+    startAt += (data.issues || []).length;
+    if(!data.issues || data.issues.length===0 || startAt>=total) break;
+    if(issues.length>=CAP){ capped = true; break; }
+  }
+  return { issues, total, capped };
+}
+
+// ---------- расчёт метрик по одной задаче ----------
+function analyze(issue){
+  const f = issue.fields;
+  const created = parseJira(f.created);
+  const resolved = parseJira(f.resolutiondate);
+  const typeBucket = classifyType(f.issuetype && f.issuetype.name);
+  const curCat = (f.status && f.status.statusCategory && f.status.statusCategory.key) || "new";
+
+  // переходы статусов из истории
+  const trans = [];
+  const hs = (issue.changelog && issue.changelog.histories) || [];
+  for(const h of hs){
+    for(const it of (h.items||[])){
+      if(it.field === "status") trans.push({at: parseJira(h.created), from: it.fromString, to: it.toString});
+    }
+  }
+  trans.sort((a,b)=>a.at-b.at);
+
+  let firstActive = null, doneAt = resolved;
+  for(const t of trans){
+    if(firstActive===null && cat(t.to)==="indeterminate") firstActive = t.at;
+    if(cat(t.to)==="done") doneAt = doneAt || t.at;
+  }
+  if(firstActive===null && curCat==="indeterminate") firstActive = created; // создан сразу в работе
+  const reopened = trans.some(t => cat(t.from)==="done" && cat(t.to)!=="done");
+
+  // тайминги в категориях для flow efficiency
+  let activeMs = 0;
+  if(trans.length){
+    let prevCat = cat(trans[0].from) || "new", prevAt = created;
+    for(const t of trans){
+      if(prevCat==="indeterminate") activeMs += (t.at - prevAt);
+      prevCat = cat(t.to); prevAt = t.at;
+    }
+    const end = doneAt || new Date();
+    if(prevCat==="indeterminate") activeMs += (end - prevAt);
+  }
+
+  const lead = (doneAt && created) ? (doneAt - created) : null;
+  const cycle = (doneAt && firstActive) ? (doneAt - firstActive) : null;
+  const flowEff = (cycle && cycle>0) ? Math.min(1, activeMs/cycle) : null;
+  const wipAge = (curCat==="indeterminate") ? ((new Date()) - (firstActive||created)) : null;
+
+  return { key: issue.key, summary: f.summary, type: typeBucket,
+           statusName: f.status && f.status.name, curCat, created, doneAt,
+           lead, cycle, flowEff, reopened, wipAge };
+}
+
+// ---------- сводка ----------
+function summarize(rows, winDays){
+  const since = Date.now() - winDays*DAY;
+  const done = rows.filter(r => r.doneAt && r.doneAt.getTime()>=since);
+  const cycles = done.map(r=>r.cycle).filter(x=>x!=null && x>=0);
+  const leads  = done.map(r=>r.lead).filter(x=>x!=null && x>=0);
+  const flows  = done.map(r=>r.flowEff).filter(x=>x!=null);
+  const wip = rows.filter(r=>r.curCat==="indeterminate");
+
+  // throughput по неделям
+  const weeks = {};
+  for(const r of done){ const k = isoWeek(r.doneAt); weeks[k]=(weeks[k]||0)+1; }
+  const weekKeys = Object.keys(weeks).sort();
+  const thrVals = weekKeys.map(k=>weeks[k]);
+  const thrAvg = thrVals.length ? thrVals.reduce((a,b)=>a+b,0)/thrVals.length : 0;
+
+  // распределение мощности (по всем в окне: done + wip)
+  const scope = done.concat(wip);
+  const dist = {Feature:0, Bug:0, TechDebt:0, Risk:0};
+  for(const r of scope) dist[r.type] = (dist[r.type]||0)+1;
+
+  const bugDone = done.filter(r=>r.type==="Bug").length;
+  const reopened = done.filter(r=>r.reopened).length;
+
+  return {
+    doneCount: done.length,
+    cycleP50: pct(cycles,50), cycleP85: pct(cycles,85),
+    leadP50: pct(leads,50), leadP85: pct(leads,85),
+    flowEffMed: pct(flows,50),
+    thrAvg, weeks, weekKeys,
+    wip, wipCount: wip.length,
+    dist, scopeCount: scope.length,
+    bugRatio: done.length ? bugDone/done.length : null,
+    reopenRate: done.length ? reopened/done.length : null
+  };
+}
+
+// ---------- рендер ----------
+function card(v, label, hint, na){
+  return `<div class="card${na?' na':''}"><div class="v">${v}</div><div class="l">${label}</div>${hint?`<div class="h">${hint}</div>`:''}</div>`;
+}
+function svgBars(keys, vals){
+  if(!keys.length) return '<p class="muted">нет данных</p>';
+  const W=Math.max(keys.length*34,300), H=140, max=Math.max(...vals,1), bw=26, gap=8, base=H-22;
+  let bars="";
+  keys.forEach((k,i)=>{
+    const h=Math.round((vals[i]/max)*(base-10)), x=i*(bw+gap)+8, y=base-h;
+    bars += `<rect x="${x}" y="${y}" width="${bw}" height="${h}" fill="#0052cc" rx="2"><title>${k}: ${vals[i]}</title></rect>`;
+    bars += `<text x="${x+bw/2}" y="${base+13}" font-size="9" fill="#97a0af" text-anchor="middle">${k.slice(-3)}</text>`;
+    bars += `<text x="${x+bw/2}" y="${y-3}" font-size="10" fill="#42526e" text-anchor="middle">${vals[i]}</text>`;
+  });
+  return `<svg width="${W}" height="${H}">${bars}</svg>`;
+}
+function distBars(dist, total){
+  const colors={Feature:"#0052cc",Bug:"#bf2600",TechDebt:"#bf6a02",Risk:"#5243aa"};
+  return Object.keys(dist).map(k=>{
+    const v=dist[k], p=total?Math.round(v/total*100):0;
+    return `<div class="barrow"><span style="width:90px">${k}</span>
+      <div class="track"><div class="fill" style="width:${p}%;background:${colors[k]}"></div></div>
+      <span style="width:70px;text-align:right">${v} · ${p}%</span></div>`;
+  }).join("");
+}
+
+function render(s, meta){
+  const effPct = s.flowEffMed!=null ? Math.round(s.flowEffMed*100)+"%" : "—";
+  const bugR = s.bugRatio!=null ? Math.round(s.bugRatio*100)+"%" : "—";
+  const reop = s.reopenRate!=null ? Math.round(s.reopenRate*100)+"%" : "—";
+
+  const exec = `<h2>Exec-сводка</h2><div class="cards">
+    ${card(fmtDays(s.cycleP50), "Cycle time, медиана", "50% задач быстрее")}
+    ${card(fmtDays(s.cycleP85), "Cycle time, 85-й перцентиль", "обещание срока")}
+    ${card(s.thrAvg.toFixed(1), "Throughput, задач/нед", "средняя пропускная")}
+    ${card(fmtDays(s.leadP50), "Lead time, медиана", "создано → done")}
+    ${card(String(s.wipCount), "WIP сейчас", "задач в работе")}
+    ${card(effPct, "Flow efficiency", "актив vs очереди")}
+    ${card(bugR, "Bug-ratio", "прокси CFR")}
+    ${card(reop, "Reopen rate", "качество потока")}
+    ${card("n/a", "Deploy freq", "нужен CI/CD", true)}
+    ${card("n/a", "MTTR", "нужны инциденты", true)}
+  </div>`;
+
+  const aging = s.wip.slice().sort((a,b)=>(b.wipAge||0)-(a.wipAge||0)).slice(0,12);
+  const agingRows = aging.map(r=>{
+    const d = r.wipAge!=null?days(r.wipAge):0;
+    const cls = d>20?"bad":d>10?"warn":"";
+    const link = baseUrl ? baseUrl+"/browse/"+r.key : "#";
+    return `<tr><td><a href="${link}" target="_blank" rel="noopener">${esc(r.key)}</a></td>
+      <td>${esc((r.summary||"").slice(0,60))}</td><td>${esc(r.statusName||"")}</td>
+      <td class="${cls}" style="text-align:right">${d.toFixed(1)} д</td></tr>`;
+  }).join("") || '<tr><td colspan="4" class="muted">нет задач в работе</td></tr>';
+
+  const ops = `<h2>Операционка</h2>
+    <div class="panel"><b>Throughput по неделям</b> (закрыто задач)${svgBars(s.weekKeys, s.weekKeys.map(k=>s.weeks[k]))}</div>
+    <div class="panel"><b>Aging WIP</b> — что дольше всего висит в работе (красное = затык)
+      <table><thead><tr><th>Ключ</th><th>Тема</th><th>Статус</th><th style="text-align:right">Возраст</th></tr></thead>
+      <tbody>${agingRows}</tbody></table></div>
+    <div class="panel"><b>Куда уходит мощность</b> (${s.scopeCount} задач в окне)${distBars(s.dist, s.scopeCount)}</div>`;
+
+  const note = `<p class="muted" style="margin-top:18px">Окно ${meta.days} дн · закрыто ${s.doneCount} · всего выбрано ${meta.total}${meta.capped?' · ⚠ обрезано до 3000, сузь проекты/окно':''}.
+    Deploy freq/MTTR/настоящий CFR появятся при подключении CI/инцидентов.</p>`;
+
+  out.innerHTML = exec + ops + note;
+}
+
+// ---------- запуск ----------
+async function run(){
+  const keys = [...$("projects").selectedOptions].map(o=>o.value);
+  if(!keys.length){ out.innerHTML = '<div class="err">Выбери хотя бы один проект.</div>'; return; }
+  const winDays = Math.max(7, parseInt($("days").value)||90);
+  out.innerHTML = '<p class="muted">Загрузка и расчёт…</p>'; statusEl.textContent = "";
+  try{
+    if(!Object.keys(CATMAP).length) await loadStatuses();
+    const { issues, total, capped } = await fetchIssues(keys, winDays);
+    statusEl.textContent = `обработка ${issues.length}…`;
+    const rows = issues.map(analyze);
+    const s = summarize(rows, winDays);
+    render(s, { days: winDays, total, capped });
+    statusEl.textContent = "готово";
+  }catch(e){
+    out.innerHTML = '<div class="err">'+esc(e.message)+'</div>'; statusEl.textContent = "";
+  }
+}
+$("load").addEventListener("click", run);
+loadProjects();
+</script>
+</body>
+</html>
