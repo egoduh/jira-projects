@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Проекты Jira</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: Segoe UI, -apple-system, Roboto, sans-serif; margin: 0; background: #f5f6f8; color: #1a1a1a; }
+  header { background: #0052cc; color: #fff; padding: 16px 24px; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  .wrap { max-width: 1000px; margin: 24px auto; padding: 0 16px; }
+  .bar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  input[type=search] { flex: 1; min-width: 200px; padding: 10px 12px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px; }
+  button { padding: 10px 16px; font-size: 14px; border: 0; border-radius: 6px; background: #0052cc; color: #fff; cursor: pointer; }
+  button:hover { background: #0043a6; }
+  .count { color: #555; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid #eee; font-size: 14px; }
+  th { background: #fafbfc; font-weight: 600; cursor: pointer; user-select: none; }
+  tr:hover td { background: #f8f9ff; }
+  td.key a { color: #0052cc; text-decoration: none; font-weight: 600; }
+  td.key a:hover { text-decoration: underline; }
+  .err { background: #ffebe6; border: 1px solid #ff8f73; color: #bf2600; padding: 16px; border-radius: 8px; white-space: pre-wrap; }
+  .muted { color: #777; }
+</style>
+</head>
+<body>
+<header><h1>Проекты Jira</h1></header>
+<div class="wrap">
+  <div class="bar">
+    <input type="search" id="q" placeholder="Фильтр по ключу или названию…" autofocus>
+    <button id="reload">Обновить</button>
+    <span class="count" id="count"></span>
+  </div>
+  <div id="out"><p class="muted">Загрузка…</p></div>
+</div>
+<script>
+let rows = [];
+const baseUrl = "__BASEURL__";
+const out = document.getElementById("out");
+const q = document.getElementById("q");
+const count = document.getElementById("count");
+let sortKey = "key", sortAsc = true;
+function esc(s){ return (s||"").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function render(){
+  const term = q.value.trim().toLowerCase();
+  let list = rows.filter(r => !term || (r.key||"").toLowerCase().includes(term) || (r.name||"").toLowerCase().includes(term));
+  list.sort((a,b) => { const x=(a[sortKey]||"").toString().toLowerCase(), y=(b[sortKey]||"").toString().toLowerCase(); return (x<y?-1:x>y?1:0)*(sortAsc?1:-1); });
+  count.textContent = list.length + " из " + rows.length;
+  if(!list.length){ out.innerHTML = '<p class="muted">Ничего не найдено.</p>'; return; }
+  const th = (k,label) => '<th data-k="'+k+'">'+label+(sortKey===k?(sortAsc?" ▲":" ▼"):"")+'</th>';
+  let html = '<table><thead><tr>' + th("key","Ключ") + th("name","Название") + th("lead","Лид") + th("projectTypeKey","Тип") + '</tr></thead><tbody>';
+  for(const r of list){
+    const lead = r.lead ? (r.lead.displayName || r.lead.name || "") : "";
+    const link = baseUrl ? baseUrl + "/projects/" + encodeURIComponent(r.key) : "#";
+    html += '<tr><td class="key"><a href="'+link+'" target="_blank" rel="noopener">'+esc(r.key)+'</a></td><td>'+esc(r.name)+'</td><td>'+esc(lead)+'</td><td class="muted">'+esc(r.projectTypeKey||"")+'</td></tr>';
+  }
+  out.innerHTML = html + '</tbody></table>';
+  out.querySelectorAll("th").forEach(el => el.onclick = () => { const k = el.dataset.k; if(sortKey===k) sortAsc=!sortAsc; else { sortKey=k; sortAsc=true; } render(); });
+}
+async function load(){
+  out.innerHTML = '<p class="muted">Загрузка…</p>';
+  try {
+    const resp = await fetch("/api/projects");
+    const data = await resp.json();
+    if(!resp.ok){ out.innerHTML = '<div class="err">'+esc((data && data.error) || "Ошибка")+'</div>'; count.textContent=""; return; }
+    rows = Array.isArray(data) ? data : (data.projects || []);
+    render();
+  } catch(e){
+    out.innerHTML = '<div class="err">Не удалось обратиться к серверу: '+esc(e.message)+'</div>';
+  }
+}
+q.addEventListener("input", render);
+document.getElementById("reload").addEventListener("click", load);
+load();
+</script>
+</body>
+</html>
