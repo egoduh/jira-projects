@@ -164,7 +164,7 @@ async function jqlCount(jql){ // дешёвый префлайт: только t
 
 async function fetchIssues(keys, winDays){
   const jql = `project in (${keys.join(",")}) AND (statusCategory != Done OR resolved >= -${winDays}d) ORDER BY created ASC`;
-  const fields = "summary,issuetype,status,created,resolutiondate,priority";
+  const fields = "summary,issuetype,status,created,resolutiondate,priority,attachment,issuelinks,subtasks,fixVersions";
 
   const total = await jqlCount(jql);
   if(total === 0) return { issues: [], total: 0, capped: false };
@@ -247,10 +247,20 @@ function analyze(issue){
   const directToDone = !!doneAt && noActive;                                       // ни разу не In Progress
   const sameDay = !!(doneAt && created) && doneAt.toDateString()===created.toDateString();
 
+  // этапы, через которые задача прошла (для воронки) + артефакты
+  const seen = new Set();
+  for(const t of trans){ if(t.from) seen.add(t.from); if(t.to) seen.add(t.to); }
+  if(f.status && f.status.name) seen.add(f.status.name);
+  const artAttach = (f.attachment||[]).length;
+  const artLinks  = (f.issuelinks||[]).length;
+  const artSub    = (f.subtasks||[]).length;
+  const artFix    = (f.fixVersions||[]).length;
+
   return { key: issue.key, summary: f.summary, type: typeName, isBug: isBug(typeName), priority,
            statusName: f.status && f.status.name, curCat, created, doneAt,
            lead, cycle, flowEff, reopened, wipAge,
-           bugReclass, backward, cycleZero, directToDone, sameDay };
+           bugReclass, backward, cycleZero, directToDone, sameDay,
+           seen: [...seen], artAttach, artLinks, artSub, artFix };
 }
 
 // ---------- сводка ----------
@@ -293,6 +303,16 @@ function summarize(rows, winDays){
   const batch = { day: batchDay, n: batchN, pct: done.length ? batchN/done.length : 0 };
   const health = { sameDay, cycleZero, directToDone, bugReclass, backward, batch };
 
+  // --- воронка этапов: сколько задач прошло через каждый статус (из истории) ---
+  const funnel = {};
+  for(const r of scope) for(const st of r.seen) funnel[st] = (funnel[st]||0)+1;
+  // --- покрытие артефактами (эвристика: что дёшево тянется из Jira) ---
+  const cov = pred => scope.length ? scope.filter(pred).length/scope.length : 0;
+  const artifacts = {
+    attach: cov(r=>r.artAttach>0), links: cov(r=>r.artLinks>0),
+    sub: cov(r=>r.artSub>0), fix: cov(r=>r.artFix>0)
+  };
+
   return {
     doneCount: done.length,
     cycleP50: pct(cycles,50), cycleP85: pct(cycles,85),
@@ -303,7 +323,7 @@ function summarize(rows, winDays){
     dist, scopeCount: scope.length,
     bugRatio: done.length ? bugDone/done.length : null,
     reopenRate: done.length ? reopened/done.length : null,
-    health
+    health, funnel, artifacts
   };
 }
 
@@ -432,7 +452,36 @@ function render(s, meta){
       <td class="${cls}" style="text-align:right">${d.toFixed(1)} д</td></tr>`;
   }).join("") || '<tr><td colspan="6" class="muted">нет задач в работе</td></tr>';
 
+  // --- воронка этапов + артефакты ---
+  const fCatOrder = {new:0, indeterminate:1, done:2};
+  const fCatColor = {new:"#6b778c", indeterminate:"#0052cc", done:"#0a7d33"};
+  const fCatName  = {new:"To Do", indeterminate:"In Progress", done:"Done"};
+  const fStatuses = Object.keys(s.funnel).sort((a,b)=> (fCatOrder[cat(a)]-fCatOrder[cat(b)]) || (s.funnel[b]-s.funnel[a]));
+  const fMax = Math.max(...Object.values(s.funnel), 1);
+  const funnelBars = fStatuses.length ? fStatuses.map(st=>{
+    const v = s.funnel[st], w = Math.round(v/fMax*100), c = cat(st);
+    return `<div class="barrow"><span style="width:180px"><span class="pill" style="background:${fCatColor[c]};color:#fff">${fCatName[c]}</span> ${esc(st)}</span>
+      <div class="track"><div class="fill" style="width:${w}%;background:${fCatColor[c]}"></div></div>
+      <span style="width:50px;text-align:right;font-weight:600">${v}</span></div>`;
+  }).join("") : '<p class="muted">нет данных</p>';
+  const A = s.artifacts, pc = x => Math.round(x*100)+"%";
+  const artRow = (label, val, tip) => `<tr><td>${label}</td><td style="text-align:right;font-weight:600">${pc(val)}</td><td class="muted" style="font-size:12px">${tip}</td></tr>`;
+
+  const funnelPanel = `<h2>Воронка этапов разработки</h2>
+    <div class="panel"><b>Сколько задач прошло через каждый этап</b> (за окно, ${s.scopeCount} задач).
+      <span class="muted">Длина столбика = число задач, коснувшихся статуса. Сужение = drop-off между этапами.</span>
+      ${funnelBars}</div>
+    <div class="panel"><b>Артефакты этапов</b> — доля задач, у которых есть артефакт (эвристика из полей Jira).
+      <table><thead><tr><th>Артефакт</th><th style="text-align:right">Покрытие</th><th>Что это</th></tr></thead><tbody>
+      ${artRow("Вложения", A.attach, "прикреплённые файлы (макеты, доки, скриншоты)")}
+      ${artRow("Связи", A.links, "issue links — связь с другими задачами / внешним (PR, спека)")}
+      ${artRow("Подзадачи", A.sub, "декомпозиция задачи на шаги")}
+      ${artRow("fixVersion", A.fix, "привязка к релизу — артефакт этапа деплоя")}
+      </tbody></table>
+      <p class="muted" style="font-size:12px;margin-top:8px">Пока это общая эвристика. Точную привязку «этап → его артефакт» (напр. «In Review обязан иметь PR-ссылку», «Testing — тест-подзадачи») настроим под ваши конвенции — скажи, чем у вас представлен артефакт каждого этапа.</p></div>`;
+
   const ops = `<h2>Операционка · где вмешаться</h2>
+    ${funnelPanel}
     <div class="panel"><b>Throughput по неделям</b> — сколько задач закрывали каждую неделю.
       <span class="muted">Ровные столбики = предсказуемый поток; провалы/скачки = нестабильность.</span>
       ${svgBars(s.weekKeys, s.weekKeys.map(k=>s.weeks[k]))}</div>
