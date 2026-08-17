@@ -59,13 +59,16 @@ function render(){
   out.innerHTML = html + '</tbody></table>';
   out.querySelectorAll("th").forEach(el => el.onclick = () => { const k = el.dataset.k; if(sortKey===k) sortAsc=!sortAsc; else { sortKey=k; sortAsc=true; } render(); });
 }
+let EXCLUDE = [];
+function isExcluded(key){ return EXCLUDE.some(p => p.endsWith("*") ? key.startsWith(p.slice(0,-1)) : key===p); }
 async function load(){
   out.innerHTML = '<p class="muted">Загрузка…</p>';
   try {
+    try { const er = await fetch("/api/exclude"); if(er.ok) EXCLUDE = await er.json(); } catch(e){}
     const resp = await fetch("/api/projects");
     const data = await resp.json();
     if(!resp.ok){ out.innerHTML = '<div class="err">'+esc((data && data.error) || "Ошибка")+'</div>'; count.textContent=""; return; }
-    rows = Array.isArray(data) ? data : (data.projects || []);
+    rows = (Array.isArray(data) ? data : (data.projects || [])).filter(p=>!isExcluded(p.key));
     render();
   } catch(e){
     out.innerHTML = '<div class="err">Не удалось обратиться к серверу: '+esc(e.message)+'</div>';

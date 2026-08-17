@@ -113,12 +113,16 @@ function cat(name){ return CATMAP[name] || "new"; }
 
 let ALL_PROJECTS = [];               // [{key,name}]
 const selectedKeys = new Set();      // авторитетный набор выбора (переживает фильтр)
+let EXCLUDE = [];                    // шаблоны исключений из projects-exclude.txt
+function isExcluded(key){ return EXCLUDE.some(p => p.endsWith("*") ? key.startsWith(p.slice(0,-1)) : key===p); }
+async function loadExclude(){ try{ const r = await fetch("/api/exclude"); if(r.ok) EXCLUDE = await r.json(); }catch(e){} }
 
 async function loadProjects(){
+  await loadExclude();
   const r = await fetch("/api/projects");
   const data = await r.json();
   if(!r.ok){ out.innerHTML = '<div class="err">'+esc(data.error||"ошибка")+'</div>'; return; }
-  ALL_PROJECTS = data.map(p=>({key:p.key, name:p.name})).sort((a,b)=>(a.key>b.key?1:-1));
+  ALL_PROJECTS = data.map(p=>({key:p.key, name:p.name})).filter(p=>!isExcluded(p.key)).sort((a,b)=>(a.key>b.key?1:-1));
   // эталон — все проекты, single select
   const ref = $("refproj");
   ref.innerHTML = ALL_PROJECTS.map(p=>`<option value="${esc(p.key)}">${esc(p.key)} — ${esc(p.name)}</option>`).join("");

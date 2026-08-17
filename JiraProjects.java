@@ -93,6 +93,9 @@ public class JiraProjects {
             } else if (path.startsWith("/api/whoami")) {
                 // Диагностика: кто мы для Jira? 200 с данными юзера = токен принят; аноним = нет.
                 send(ex, 200, jiraGet("/rest/api/2/myself"), "application/json; charset=utf-8");
+            } else if (path.startsWith("/api/exclude")) {
+                // Список проектов-исключений из projects-exclude.txt (фильтрует фронт).
+                send(ex, 200, excludeJson(), "application/json; charset=utf-8");
             } else if (path.startsWith("/api/status")) {
                 // Все статусы с их категориями (To Do / In Progress / Done) — для маппинга истории.
                 send(ex, 200, jiraGet("/rest/api/2/status"), "application/json; charset=utf-8");
@@ -189,6 +192,27 @@ public class JiraProjects {
         try (OutputStream os = ex.getResponseBody()) {
             os.write(b);
         }
+    }
+
+    /** Читает projects-exclude.txt (ключ/шаблон в строке, # — комментарий) → JSON-массив строк. */
+    static String excludeJson() {
+        List<String> pats = new ArrayList<>();
+        try {
+            Path p = Paths.get("projects-exclude.txt");
+            if (Files.exists(p)) {
+                for (String line : Files.readAllLines(p, StandardCharsets.UTF_8)) {
+                    String t = line.trim();
+                    if (!t.isEmpty() && !t.startsWith("#")) pats.add(t);
+                }
+            }
+        } catch (IOException ignored) {
+        }
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < pats.size(); i++) {
+            if (i > 0) sb.append(",");
+            sb.append(jsonStr(pats.get(i)));
+        }
+        return sb.append("]").toString();
     }
 
     static String queryParam(String rawQuery, String name) {
