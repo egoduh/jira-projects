@@ -18,10 +18,18 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.KeyStore;
 import java.security.SecureRandom;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import javax.net.ssl.TrustManagerFactory;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -62,7 +70,7 @@ public class JiraProjects {
         if (baseUrl.isEmpty() || token.isEmpty()) {
             System.out.println("!  Не заданы JIRA_BASE_URL / JIRA_TOKEN — страница откроется, но покажет ошибку.");
         }
-        if (insecure) trustAllCerts();
+        configureTls();
 
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
         server.createContext("/", JiraProjects::handle);
@@ -203,6 +211,25 @@ public class JiraProjects {
         return sb.append("\"").toString();
     }
 
+    /**
+     * Три режима TLS:
+     *   JIRA_INSECURE=1        — не проверять сертификат вообще (последнее средство);
+     *   JIRA_CACERT=путь       — доверять этому корпоративному CA (PEM/CRT) + системным (правильно);
+     *   по умолчанию           — только системный truststore JDK (для публичных CA).
+     */
+    static void configureTls() throws Exception {
+        if (insecure) {
+            trustAllCerts();
+            System.out.println("TLS: проверка сертификата ОТКЛЮЧЕНА (JIRA_INSECURE).");
+            return;
+        }
+        String caPath = env("JIRA_CACERT", "");
+        if (!caPath.isEmpty()) {
+            installCustomCa(caPath);
+            System.out.println("TLS: добавлен корпоративный CA из " + caPath);
+        }
+    }
+
     static void trustAllCerts() throws Exception {
         TrustManager[] tm = {new X509TrustManager() {
             public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
@@ -215,6 +242,57 @@ public class JiraProjects {
         HttpsURLConnection.setDefaultHostnameVerifier(new HostnameVerifier() {
             public boolean verify(String hostname, SSLSession session) { return true; }
         });
+    }
+
+    /** Доверять переданному CA-файлу (один или несколько PEM/CRT) в дополнение к системным. */
+    static void installCustomCa(String path) throws Exception {
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        Collection<? extends Certificate> certs;
+        try (InputStream in = Files.newInputStream(Paths.get(path))) {
+            certs = cf.generateCertificates(in);
+        }
+        if (certs.isEmpty()) throw new Exception("В файле CA нет сертификатов: " + path);
+
+        KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+        ks.load(null, null);
+        int i = 0;
+        for (Certificate cert : certs) ks.setCertificateEntry("ca" + (i++), cert);
+
+        final X509TrustManager custom = firstX509(ks);
+        final X509TrustManager system = firstX509(null);
+
+        X509TrustManager composite = new X509TrustManager() {
+            public void checkClientTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                system.checkClientTrusted(chain, authType);
+            }
+            public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                try {
+                    system.checkServerTrusted(chain, authType);       // сначала системные CA
+                } catch (CertificateException e) {
+                    custom.checkServerTrusted(chain, authType);        // затем корпоративный
+                }
+            }
+            public X509Certificate[] getAcceptedIssuers() {
+                List<X509Certificate> all = new ArrayList<>();
+                all.addAll(Arrays.asList(system.getAcceptedIssuers()));
+                all.addAll(Arrays.asList(custom.getAcceptedIssuers()));
+                return all.toArray(new X509Certificate[0]);
+            }
+        };
+
+        SSLContext sc = SSLContext.getInstance("TLS");
+        sc.init(null, new TrustManager[]{composite}, new SecureRandom());
+        HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory());
+    }
+
+    /** Первый X509TrustManager из truststore ks (или системного, если ks == null). */
+    static X509TrustManager firstX509(KeyStore ks) throws Exception {
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init(ks);
+        for (TrustManager tm : tmf.getTrustManagers()) {
+            if (tm instanceof X509TrustManager) return (X509TrustManager) tm;
+        }
+        throw new Exception("Не найден X509TrustManager");
     }
 
     static class JiraError extends Exception {
