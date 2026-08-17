@@ -53,7 +53,7 @@ public class JiraProjects {
 
     static final Map<String, String> DOTENV = new HashMap<>();
 
-    static String baseUrl, token, authMode, username;
+    static String baseUrl, token, authMode, username, cookie;
     static boolean insecure;
     static int timeoutMs, port;
 
@@ -63,13 +63,15 @@ public class JiraProjects {
         token    = env("JIRA_TOKEN", "");
         authMode = env("JIRA_AUTH_MODE", "bearer").toLowerCase();
         username = env("JIRA_USERNAME", "");
+        cookie   = env("JIRA_COOKIE", "");   // готовая SSO-сессия из браузера (напр. JSESSIONID=...)
         insecure = Arrays.asList("1", "true", "yes").contains(env("JIRA_INSECURE", "").toLowerCase());
         timeoutMs = Integer.parseInt(env("JIRA_TIMEOUT", "30")) * 1000;
         port = Integer.parseInt(env("PORT", "8000"));
 
-        if (baseUrl.isEmpty() || token.isEmpty()) {
-            System.out.println("!  Не заданы JIRA_BASE_URL / JIRA_TOKEN — страница откроется, но покажет ошибку.");
+        if (baseUrl.isEmpty() || (token.isEmpty() && cookie.isEmpty())) {
+            System.out.println("!  Нет JIRA_BASE_URL или авторизации (JIRA_TOKEN / JIRA_COOKIE) — страница покажет ошибку.");
         }
+        if (!cookie.isEmpty()) System.out.println("Авторизация: cookie (SSO-сессия из браузера).");
         configureTls();
 
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
@@ -116,9 +118,12 @@ public class JiraProjects {
     /** GET к Jira REST с авторизацией. Возвращает тело, кидает JiraError с подсказкой. */
     static String jiraGet(String apiPath) throws Exception {
         if (baseUrl.isEmpty()) throw new JiraError("Не задан JIRA_BASE_URL");
-        if (token.isEmpty()) throw new JiraError("Не задан JIRA_TOKEN");
-        if (authMode.equals("basic") && username.isEmpty())
-            throw new JiraError("Для JIRA_AUTH_MODE=basic нужен JIRA_USERNAME");
+        boolean useCookie = !cookie.isEmpty();
+        if (!useCookie) {
+            if (token.isEmpty()) throw new JiraError("Нет авторизации: задай JIRA_TOKEN или JIRA_COOKIE");
+            if (authMode.equals("basic") && username.isEmpty())
+                throw new JiraError("Для JIRA_AUTH_MODE=basic нужен JIRA_USERNAME");
+        }
 
         URL u = new URL(baseUrl + apiPath);
         HttpURLConnection c = (HttpURLConnection) u.openConnection();
@@ -126,7 +131,11 @@ public class JiraProjects {
         c.setConnectTimeout(timeoutMs);
         c.setReadTimeout(timeoutMs);
         c.setRequestProperty("Accept", "application/json");
-        c.setRequestProperty("Authorization", authHeader());
+        if (useCookie) {
+            c.setRequestProperty("Cookie", cookie);   // переиспользуем SSO-сессию браузера
+        } else {
+            c.setRequestProperty("Authorization", authHeader());
+        }
 
         int code;
         try {

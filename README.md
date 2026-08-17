@@ -50,6 +50,7 @@ javac JiraProjects.java && java JiraProjects
 | `JIRA_AUTH_MODE` | `bearer`     | `ksso` (Kantega) / `basic` / `bearer`        |
 | `JIRA_USERNAME`  | —            | Только для `basic`                           |
 | `JIRA_AUTH_SCHEME` | —          | Своё имя схемы: `Authorization: <схема> <токен>` |
+| `JIRA_COOKIE`    | —            | SSO-сессия из браузера (напр. `JSESSIONID=...`); токен тогда не нужен |
 | `JIRA_CACERT`    | —            | Путь к корп. CA (PEM/CRT) — правильный TLS   |
 | `JIRA_INSECURE`  | —            | `1` — вообще не проверять TLS                 |
 | `JIRA_TIMEOUT`   | `30`         | Таймаут, сек                                 |
@@ -78,6 +79,18 @@ JIRA_INSECURE=1
 на заголовок, ссылка на каждый проект, кнопка «Обновить».
 
 Секреты через `.env`/окружение, в git не попадают.
+
+## Если токен не принимается (`X-AUSERNAME: anonymous`)
+
+Значит Jira видит запрос как анонимный — токен не заведён на сервере. Обходной путь без
+токена — **переиспользовать свою SSO-сессию из браузера** (ты и так залогинен в Jira):
+
+1. Открой Jira в браузере. **F12 → Application (Storage) → Cookies →** выбери домен Jira.
+2. Скопируй значение **`JSESSIONID`**.
+3. В `.env`: `JIRA_COOKIE=JSESSIONID=<скопированное-значение>` (строку `JIRA_TOKEN` можно
+   не задавать). Перезапусти `java`, проверь `http://localhost:8000/api/whoami`.
+
+Сессия живёт, пока активна в браузере; протухнет — обнови `JSESSIONID`.
 
 ## Пустой список `[]`
 
